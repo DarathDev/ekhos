@@ -13,12 +13,19 @@ import utility "ekhos:utility"
 assert :: utility.assert
 
 cpuSimulator :: struct {
-	info: cpuSimulationInfo,
+	info:   cpuSimulationInfo,
+	timing: CpuTiming,
 }
 
 cpuSimulationInfo :: struct {
 	apertureSampleCount: u32,
 	scattererBatchSize:  u32,
+}
+
+CpuTiming :: struct {
+	planning: time.Duration,
+	simulation: time.Duration,
+	stages:   CpuStageTiming,
 }
 
 create_cpu_simulator :: proc() -> (simulator: cpuSimulator, ok := true) { return }
@@ -30,6 +37,48 @@ SCATTER_BATCH_SIZE :: 256
 DATALINE_BATCH_SIZE :: 1024
 PROGRESS_LOG_DELAY_THRESHOLD :: 20.0 * time.Second
 PROGRESS_LOG_INTERVAL :: 20.0 * time.Second
+CPU_STAGE_TIMING :: bool(#config(CPU_STAGE_TIMING, false))
+
+CpuStageTiming :: struct {
+	allocation:       time.Duration,
+	elementResponses: time.Duration,
+	transmitCoalesce: time.Duration,
+	receiveCoalesce:  time.Duration,
+	convolution:      time.Duration,
+	temporal:         time.Duration,
+}
+
+cpu_stage_timing_add :: proc(total: ^time.Duration, stopwatch: ^time.Stopwatch) {
+	time.stopwatch_stop(stopwatch)
+	total^ += time.stopwatch_duration(stopwatch^)
+	stopwatch^ = {}
+}
+
+log_cpu_timing :: proc(timing: CpuTiming, label: string, loc := #caller_location) {
+	when CPU_STAGE_TIMING {
+		log.infof("%s planning stage: %v", label, timing.planning, location = loc)
+		log.infof(`
+%s CPU stage timing table:
+stage                         total                 percent
+allocation                    %16v                %.1f%%
+element responses             %16v                %.1f%%
+transmit coalescing           %16v                %.1f%%
+receive coalescing            %16v                %.1f%%
+convolution                   %16v                %.1f%%
+temporal response             %16v                %.1f%%
+total                         %16v                100.0%%`,
+			label,
+			timing.stages.allocation, timing.simulation > 0 ? 100 * f64(timing.stages.allocation) / f64(timing.simulation) : 0,
+			timing.stages.elementResponses, timing.simulation > 0 ? 100 * f64(timing.stages.elementResponses) / f64(timing.simulation) : 0,
+			timing.stages.transmitCoalesce, timing.simulation > 0 ? 100 * f64(timing.stages.transmitCoalesce) / f64(timing.simulation) : 0,
+			timing.stages.receiveCoalesce, timing.simulation > 0 ? 100 * f64(timing.stages.receiveCoalesce) / f64(timing.simulation) : 0,
+			timing.stages.convolution, timing.simulation > 0 ? 100 * f64(timing.stages.convolution) / f64(timing.simulation) : 0,
+			timing.stages.temporal, timing.simulation > 0 ? 100 * f64(timing.stages.temporal) / f64(timing.simulation) : 0,
+			timing.simulation,
+			location = loc,
+		)
+	}
+}
 
 simulate_cpu :: proc(
 	simulator: ^cpuSimulator,
@@ -45,6 +94,9 @@ simulate_cpu :: proc(
 	ok := true,
 ) {
 	utility.prof_scoped(#procedure)
+	totalStopwatch: time.Stopwatch
+	time.stopwatch_start(&totalStopwatch)
+	timing: CpuStageTiming
 
 	// TODO: Add multi-core support
 
@@ -73,6 +125,8 @@ simulate_cpu :: proc(
 	maxBatchRxCount := min(receiveChannelCount, DATALINE_BATCH_SIZE)
 	batchSize := simulator.info.scattererBatchSize > 0 ? i32(simulator.info.scattererBatchSize) : SCATTER_BATCH_SIZE
 
+	stageStopwatch: time.Stopwatch
+	time.stopwatch_start(&stageStopwatch)
 	utility.prof_begin("Allocate")
 	data = make_aligned([]f32, sampleCount * receiveChannelCount * transmissionCount, 16)
 	elementImpulses := make([]ImpulseResponse, int(min(batchSize, scatterCount)) * len(elements), context.allocator)
@@ -93,6 +147,9 @@ simulate_cpu :: proc(
 	defer delete(transmissionImpulses)
 	defer delete(scatterBatchMemory)
 	utility.prof_end()
+	when CPU_STAGE_TIMING {
+		cpu_stage_timing_add(&timing.allocation, &stageStopwatch)
+	}
 
 	// TODO: Choose where to put the scatter scaling
 
@@ -100,6 +157,7 @@ simulate_cpu :: proc(
 		scatterBatchEnd := min(scatterBatchStart + batchSize, scatterCount)
 		scatterBatchCount := scatterBatchEnd - scatterBatchStart
 
+		when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 		utility.prof_begin("Element SIR Calculation")
 		for scatter, scatterIndex in scatters[scatterBatchStart:scatterBatchEnd] {
 			scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
@@ -108,8 +166,10 @@ simulate_cpu :: proc(
 			}
 		}
 		utility.prof_end()
+		when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.elementResponses, &stageStopwatch)
 
 		for transmission, transmissionIndex in transmissions {
+			when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 			utility.prof_begin("Transmission Impulse Calculation")
 			for _, scatterIndex in scatters[scatterBatchStart:scatterBatchEnd] {
 				scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
@@ -149,6 +209,7 @@ simulate_cpu :: proc(
 				}
 			}
 			utility.prof_end()
+			when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.transmitCoalesce, &stageStopwatch)
 
 			for rxBatchStart: i32 = 0; rxBatchStart < receiveChannelCount; rxBatchStart += DATALINE_BATCH_SIZE {
 				rxBatchEnd := min(rxBatchStart + DATALINE_BATCH_SIZE, receiveChannelCount)
@@ -157,6 +218,7 @@ simulate_cpu :: proc(
 				timeDomainScatters := make([dynamic]CpuScatterData, 0, scatterBatchCount, scatterAllocator)
 				frequencyDomainScatters := make([dynamic]CpuScatterData, 0, scatterBatchCount, scatterAllocator)
 
+				when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 				for scatter, scatterIndex in scatters[scatterBatchStart:scatterBatchEnd] {
 					scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
 
@@ -247,8 +309,10 @@ simulate_cpu :: proc(
 						append(&frequencyDomainScatters, scatterData)
 					}
 				}
+				when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.receiveCoalesce, &stageStopwatch)
 
 				if len(timeDomainScatters) > 0 {
+					when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 					convolve_time_domain(
 						sampleCount,
 						batchTxCount,
@@ -256,8 +320,10 @@ simulate_cpu :: proc(
 						timeDomainScatters[:],
 						data[(rxBatchStart + auto_cast transmissionIndex * receiveChannelCount) * sampleCount:],
 					)
+					when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.convolution, &stageStopwatch)
 				}
 				if len(frequencyDomainScatters) > 0 {
+					when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 					convolve_frequency_domain(
 						sampleCount,
 						batchTxCount,
@@ -265,6 +331,7 @@ simulate_cpu :: proc(
 						frequencyDomainScatters[:],
 						data[(rxBatchStart + auto_cast transmissionIndex * receiveChannelCount) * sampleCount:],
 					)
+					when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.convolution, &stageStopwatch)
 				}
 				mem.arena_free_all(&scatterArena)
 
@@ -293,7 +360,14 @@ simulate_cpu :: proc(
 		}
 	}
 
+	when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 	apply_temporal_responses(data, sampleCount, 1 / samplingFrequency, transmissions, receiveChannels, impulses, excitations)
+	when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.temporal, &stageStopwatch)
+	when CPU_STAGE_TIMING {
+		time.stopwatch_stop(&totalStopwatch)
+		simulator.timing.stages = timing
+		simulator.timing.simulation = time.stopwatch_duration(totalStopwatch)
+	}
 	return
 }
 

@@ -27,15 +27,26 @@ assume :: ekhos_util.assume
 MAX_FRAMES_IN_FLIGHT :: 2
 SCATTER_UPLOAD_WINDOW_SIZE :: 16 * runtime.Megabyte
 SCATTER_BATCHES_PER_COMMAND_BUFFER :: 2
+SCATTER_PROGRESS_COMMANDS_PER_WINDOW :: 32
 GPU_CALC_ELEMENT_CHUNK_SIZE :: 256
 GPU_ELEMENT_SET_CHUNK_SIZE :: 1024
 GPU_APERTURE_SAMPLE_CHUNK_SIZE :: 65536
 GPU_CONVOLUTION_SAMPLE_CHUNK_SIZE :: 1024
-VULKAN_PROGRESS_LOG_DELAY_THRESHOLD :: 20.0 * time.Second
-VULKAN_PROGRESS_LOG_INTERVAL :: 20.0 * time.Second
+VULKAN_PROGRESS_LOG_DELAY_THRESHOLD :: 10 * time.Second
+VULKAN_PROGRESS_LOG_INTERVAL :: 10 * time.Second
 
 DISPATCH_TIMEOUT :: 1000 * time.Second
 GPU_STAGE_TIMING :: bool(#config(GPU_STAGE_TIMING, false))
+GPU_STAGE_TIMING_QUERY_COUNT :: 65536
+
+GpuTimingStage :: enum u8 {
+	CalculateAperture,
+	MeasureAperture,
+	CoalesceAperture,
+	PulseEchoConvolution,
+	TemporalResponse,
+	Readback,
+}
 
 SHADER_COMPUTE_CALCULATE_APERTURE :: #load("shaders/calculateAperture.spv")
 SHADER_COMPUTE_MEASURE_APERTURE :: #load("shaders/measureAperture.spv")
@@ -75,6 +86,20 @@ vkSimulator :: struct {
 	transferTimeline:      ekhos_vk.TimelineSemaphore,
 	computeTimelineValue:  u64,
 	transferTimelineValue: u64,
+	timingQueryPool:       vk.QueryPool,
+	timingQueryResults:    [dynamic]u64,
+	timingQueryStages:     [dynamic]GpuTimingStage,
+	timing:                GpuTiming,
+}
+
+GpuTimingStageResult :: struct {
+	dispatches: int,
+	total:      time.Duration,
+}
+
+GpuTiming :: struct {
+	planning: time.Duration,
+	stages:   [6]GpuTimingStageResult,
 }
 
 vkSimulationInfo :: struct {
@@ -321,6 +346,11 @@ create_vulkan_simulator :: proc(settings: SimulationSettings) -> (simulator: vkS
 	if _, transferQueueOk := simulator.transferQueue.?; transferQueueOk {
 		simulator.transferTimeline = check(ekhos_vk.create_timeline_semaphore(simulator.device, label = "Transfer Timeline")) or_return
 	}
+	when GPU_STAGE_TIMING {
+		simulator.timingQueryPool = check(ekhos_vk.create_timestamp_query_pool(simulator.device, GPU_STAGE_TIMING_QUERY_COUNT)) or_return
+		simulator.timingQueryResults = make([dynamic]u64, GPU_STAGE_TIMING_QUERY_COUNT)
+		simulator.timingQueryStages = make([dynamic]GpuTimingStage, GPU_STAGE_TIMING_QUERY_COUNT / 2)
+	}
 
 	return
 }
@@ -343,6 +373,11 @@ destroy_vulkan_simulator :: proc(simulator: ^vkSimulator) {
 	if _, transferQueueOk := simulator.transferQueue.?; transferQueueOk {
 		ekhos_vk.destroy_timeline_semaphore(simulator.device, simulator.transferTimeline)
 		ekhos_vk.destroy_command_pool(simulator.device, simulator.transferCommandPool)
+	}
+	when GPU_STAGE_TIMING {
+		ekhos_vk.destroy_query_pool(simulator.device, simulator.timingQueryPool)
+		delete(simulator.timingQueryResults)
+		delete(simulator.timingQueryStages)
 	}
 	ekhos_vk.destroy_command_pool(simulator.device, simulator.computeCommandPool)
 
@@ -662,9 +697,9 @@ simulate_vulkan :: proc(
 	)
 
 	commandBuffer, timelineWait, hasTransferQueue := prepare_vk_simulation(simulator, resources, initialDataBuffer, initialTemporalBuffer) or_return
-	stageStopwatch: time.Stopwatch
 	when GPU_STAGE_TIMING {
-		time.stopwatch_start(&stageStopwatch)
+		clear(&simulator.timingQueryStages)
+		simulator.timing.stages = {}
 	}
 
 	shaderStage: vk.ShaderStageFlags = {.COMPUTE}
@@ -672,7 +707,13 @@ simulate_vulkan :: proc(
 	scatterBatchSize := simulator.info.scattererBatchSize
 	dataBufferAddress := ekhos_vk.get_buffer_address(device, resources.dataBuffer.main)
 	header := resources.dataBufferHeader
-	scatterWindowSize := max(1, len(scatters))
+	scatterWindowSize := max(
+		1,
+		min(
+			len(scatters),
+			int(scatterBatchSize) * SCATTER_BATCHES_PER_COMMAND_BUFFER * SCATTER_PROGRESS_COMMANDS_PER_WINDOW,
+		),
+	)
 	totalScatterCommands := 0
 	for progressWindowOffset := 0; progressWindowOffset < len(scatters); progressWindowOffset += scatterWindowSize {
 		progressWindowEnd := min(progressWindowOffset + scatterWindowSize, len(scatters))
@@ -705,6 +746,11 @@ simulate_vulkan :: proc(
 			}
 			commandBuffer = computeCommandBuffer
 			ekhos_vk.cmd_begin(commandBuffer, true) or_return
+			when GPU_STAGE_TIMING {
+				if windowOffset == 0 && commandBufferIndex == 0 {
+					ekhos_vk.cmd_reset_query_pool(commandBuffer, simulator.timingQueryPool, GPU_STAGE_TIMING_QUERY_COUNT)
+				}
+			}
 			ekhos_vk.cmd_begin_label(commandBuffer, "Scatter Batch")
 			ekhos_vk.cmd_pipeline_barrier(
 				commandBuffer,
@@ -741,6 +787,7 @@ simulate_vulkan :: proc(
 
 			for scatterOffset := commandStart; scatterOffset < commandEnd; scatterOffset += auto_cast scatterBatchSize {
 				ekhos_vk.cmd_begin_label(commandBuffer, "Calculate Aperture")
+				calculateQuery := gpu_timing_begin(simulator, commandBuffer, .CalculateAperture)
 				dispatch_vk_calculate_aperture(
 					commandBuffer,
 					simulator,
@@ -753,6 +800,7 @@ simulate_vulkan :: proc(
 					scatterOffset,
 					scatterBufferAddress,
 				) or_return
+				gpu_timing_end(simulator, commandBuffer, calculateQuery)
 				ekhos_vk.cmd_end_label(commandBuffer)
 				ekhos_vk.cmd_pipeline_barrier(
 					commandBuffer,
@@ -771,6 +819,7 @@ simulate_vulkan :: proc(
 					{},
 				)
 				ekhos_vk.cmd_begin_label(commandBuffer, "Measure Aperture")
+				measureQuery := gpu_timing_begin(simulator, commandBuffer, .MeasureAperture)
 				dispatch_vk_measure_aperture(
 					commandBuffer,
 					simulator,
@@ -783,6 +832,7 @@ simulate_vulkan :: proc(
 					scatterBatchSize,
 					scatterOffset,
 				) or_return
+				gpu_timing_end(simulator, commandBuffer, measureQuery)
 				ekhos_vk.cmd_end_label(commandBuffer)
 				ekhos_vk.cmd_pipeline_barrier(
 					commandBuffer,
@@ -801,6 +851,7 @@ simulate_vulkan :: proc(
 					{},
 				)
 				ekhos_vk.cmd_begin_label(commandBuffer, "Coalesce Aperture")
+				coalesceQuery := gpu_timing_begin(simulator, commandBuffer, .CoalesceAperture)
 				dispatch_vk_coalesce_aperture(
 					commandBuffer,
 					simulator,
@@ -813,6 +864,7 @@ simulate_vulkan :: proc(
 					scatterBatchSize,
 					scatterOffset,
 				) or_return
+				gpu_timing_end(simulator, commandBuffer, coalesceQuery)
 				ekhos_vk.cmd_end_label(commandBuffer)
 				ekhos_vk.cmd_pipeline_barrier(
 					commandBuffer,
@@ -831,6 +883,7 @@ simulate_vulkan :: proc(
 					{},
 				)
 				ekhos_vk.cmd_begin_label(commandBuffer, "Pulse Echo Convolution")
+				pulseEchoQuery := gpu_timing_begin(simulator, commandBuffer, .PulseEchoConvolution)
 				dispatch_vk_pulse_echo_convolution(
 					commandBuffer,
 					simulator,
@@ -844,6 +897,7 @@ simulate_vulkan :: proc(
 					scatterBatchSize,
 					scatterOffset,
 				) or_return
+				gpu_timing_end(simulator, commandBuffer, pulseEchoQuery)
 				ekhos_vk.cmd_end_label(commandBuffer)
 			}
 
@@ -871,12 +925,6 @@ simulate_vulkan :: proc(
 			lastProgressLogTime,
 		) or_return
 	}
-	when GPU_STAGE_TIMING {
-		time.stopwatch_stop(&stageStopwatch)
-		log.infof("Vulkan GPU stage: scatter=%.6fs", time.duration_seconds(time.stopwatch_duration(stageStopwatch)))
-		time.stopwatch_start(&stageStopwatch)
-	}
-
 	commandBuffer = run_vk_temporal_pass(
 		simulator,
 		resources,
@@ -889,13 +937,9 @@ simulate_vulkan :: proc(
 		timelineWait,
 		hasTransferQueue,
 	) or_return
-	when GPU_STAGE_TIMING {
-		time.stopwatch_stop(&stageStopwatch)
-		log.infof("Vulkan GPU stage: temporal=%.6fs", time.duration_seconds(time.stopwatch_duration(stageStopwatch)))
-		time.stopwatch_start(&stageStopwatch)
-	}
 	ekhos_vk.cmd_begin(commandBuffer, true) or_return
 	ekhos_vk.cmd_begin_label(commandBuffer, "Readback Response")
+	readbackQuery := gpu_timing_begin(simulator, commandBuffer, .Readback, {.ALL_COMMANDS})
 	ekhos_vk.cmd_pipeline_barrier(
 		commandBuffer,
 		{},
@@ -921,6 +965,7 @@ simulate_vulkan :: proc(
 		downloadBuffer = resources.responseBuffer.main
 	}
 	ekhos_vk.cmd_end_label(commandBuffer)
+	gpu_timing_end(simulator, commandBuffer, readbackQuery, {.TRANSFER})
 	ekhos_vk.cmd_end(commandBuffer) or_return
 	simulator.computeTimelineValue += 1
 	ekhos_vk.queue_submit(
@@ -933,10 +978,77 @@ simulate_vulkan :: proc(
 	check(ekhos_vk.wait_semaphores(device, timelineWait, auto_cast time.duration_nanoseconds(auto_cast DISPATCH_TIMEOUT))) or_return
 	ekhos_vk.read_from_buffer(downloadBuffer, slice.to_bytes(response))
 	when GPU_STAGE_TIMING {
-		time.stopwatch_stop(&stageStopwatch)
-		log.infof("Vulkan GPU stage: readback=%.6fs", time.duration_seconds(time.stopwatch_duration(stageStopwatch)))
+		gpu_timing_collect(simulator)
 	}
 	return
+}
+
+gpu_timing_begin :: proc(
+	simulator: ^vkSimulator,
+	commandBuffer: ekhos_vk.CommandBuffer,
+	stage: GpuTimingStage,
+	pipelineStage: vk.PipelineStageFlags = {.COMPUTE_SHADER},
+) -> (
+	query: u32,
+) {
+	when GPU_STAGE_TIMING {
+		query = u32(len(simulator.timingQueryStages)) * 2
+		assert(query + 1 < GPU_STAGE_TIMING_QUERY_COUNT, "GPU timing query pool is too small")
+		append(&simulator.timingQueryStages, stage)
+		ekhos_vk.cmd_write_timestamp(commandBuffer, simulator.timingQueryPool, query, pipelineStage)
+	}
+	return
+}
+
+gpu_timing_end :: proc(simulator: ^vkSimulator, commandBuffer: ekhos_vk.CommandBuffer, query: u32, pipelineStage: vk.PipelineStageFlags = {.COMPUTE_SHADER}) {
+	when GPU_STAGE_TIMING {
+		ekhos_vk.cmd_write_timestamp(commandBuffer, simulator.timingQueryPool, query + 1, pipelineStage)
+	}
+}
+
+gpu_timing_collect :: proc(simulator: ^vkSimulator) {
+	when GPU_STAGE_TIMING {
+		queryCount := u32(len(simulator.timingQueryStages)) * 2
+		if check(ekhos_vk.get_timestamp_query_results(simulator.device, simulator.timingQueryPool, queryCount, simulator.timingQueryResults[:])) != .SUCCESS do return
+		stageTotals: [6]u64
+		for stage, stageIndex in simulator.timingQueryStages {
+			query := u32(stageIndex) * 2
+			stageTotals[int(stage)] += simulator.timingQueryResults[query + 1] - simulator.timingQueryResults[query]
+		}
+
+		timestampPeriod := f64(simulator.device.physicalDevice.properties.limits.timestampPeriod)
+		for stage in simulator.timingQueryStages do simulator.timing.stages[int(stage)].dispatches += 1
+		for stageIndex in 0 ..< len(simulator.timing.stages) {
+			simulator.timing.stages[stageIndex].total = time.Duration(f64(stageTotals[stageIndex]) * timestampPeriod)
+		}
+		totalDuration: time.Duration
+		totalDispatchCount: int
+		for stage in simulator.timing.stages {
+			totalDuration += stage.total
+			totalDispatchCount += stage.dispatches
+		}
+	}
+}
+
+log_gpu_timing :: proc(timing: GpuTiming, label: string, loc := #caller_location) {
+	when GPU_STAGE_TIMING {
+		totalDuration: time.Duration
+		totalDispatchCount: int
+		for stage in timing.stages {
+			totalDuration += stage.total
+			totalDispatchCount += stage.dispatches
+		}
+		log.infof("%s planning stage: %v", label, timing.planning, location = loc)
+		log.infof("%s Vulkan GPU timing table:", label, location = loc)
+		log.info("stage                         dispatches   total       average", location = loc)
+		log.infof("calculate aperture            %10d   %v      %v", timing.stages[0].dispatches, timing.stages[0].total, timing.stages[0].dispatches > 0 ? timing.stages[0].total / time.Duration(timing.stages[0].dispatches) : 0, location = loc)
+		log.infof("measure aperture              %10d   %v      %v", timing.stages[1].dispatches, timing.stages[1].total, timing.stages[1].dispatches > 0 ? timing.stages[1].total / time.Duration(timing.stages[1].dispatches) : 0, location = loc)
+		log.infof("coalesce aperture             %10d   %v      %v", timing.stages[2].dispatches, timing.stages[2].total, timing.stages[2].dispatches > 0 ? timing.stages[2].total / time.Duration(timing.stages[2].dispatches) : 0, location = loc)
+		log.infof("pulse echo convolution        %10d   %v      %v", timing.stages[3].dispatches, timing.stages[3].total, timing.stages[3].dispatches > 0 ? timing.stages[3].total / time.Duration(timing.stages[3].dispatches) : 0, location = loc)
+		log.infof("temporal response             %10d   %v      %v", timing.stages[4].dispatches, timing.stages[4].total, timing.stages[4].dispatches > 0 ? timing.stages[4].total / time.Duration(timing.stages[4].dispatches) : 0, location = loc)
+		log.infof("readback                      %10d   %v      %v", timing.stages[5].dispatches, timing.stages[5].total, timing.stages[5].dispatches > 0 ? timing.stages[5].total / time.Duration(timing.stages[5].dispatches) : 0, location = loc)
+		log.infof("total                         %10d   %v      %v", totalDispatchCount, totalDuration, totalDispatchCount > 0 ? totalDuration / time.Duration(totalDispatchCount) : 0, location = loc)
+	}
 }
 
 destroy_vulkan_simulator_resources :: proc(simulator: ^vkSimulator) {
@@ -1135,7 +1247,9 @@ run_vk_temporal_pass :: proc(
 						sampleInterval = 1 / settings.samplingFrequency,
 					},
 				)
+				temporalQuery := gpu_timing_begin(simulator, commandBuffer, .TemporalResponse)
 				vk.CmdDispatch(commandBuffer.commandBuffer, u32(math.ceil_f32(f32(sampleChunkCount) / f32(resources.temporalSpec.SampleWorkgroupSize))), 1, 1)
+				gpu_timing_end(simulator, commandBuffer, temporalQuery)
 			}
 		}
 	}

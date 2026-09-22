@@ -918,6 +918,19 @@ cmd_end_label :: proc(commandBuffer: CommandBuffer) {
 	if commandBuffer.debugUtils do vk.CmdEndDebugUtilsLabelEXT(commandBuffer.commandBuffer)
 }
 
+cmd_write_timestamp :: proc(
+	commandBuffer: CommandBuffer,
+	queryPool: vk.QueryPool,
+	query: u32,
+	pipelineStage: vk.PipelineStageFlags = {.COMPUTE_SHADER},
+) {
+	vk.CmdWriteTimestamp(commandBuffer.commandBuffer, pipelineStage, queryPool, query)
+}
+
+cmd_reset_query_pool :: proc(commandBuffer: CommandBuffer, queryPool: vk.QueryPool, queryCount: u32) {
+	vk.CmdResetQueryPool(commandBuffer.commandBuffer, queryPool, 0, queryCount)
+}
+
 SemaphoreBarrier :: struct {
 	semaphore: Semaphore,
 	value:     u64,

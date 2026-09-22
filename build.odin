@@ -73,6 +73,9 @@ main :: proc() {
 	append(&options, ..EKHOS_ODIN_BUILD_OPTIONS)
 	append(&options, ..odin_collections_to_options(EKHOS_COLLECTIONS))
 
+	cpuStageTiming := false
+	gpuStageTiming := false
+	planStageTiming := false
 	args := os.args
 	for arg in args {
 		switch arg {
@@ -102,12 +105,26 @@ main :: proc() {
 			EKHOS_BUILD_TYPE = "test"
 			append(&options, ..odin_defines_to_options(EKHOS_ODIN_BENCHMARK_DEFINES))
 		case "-gpu-stage-timing":
-			append(&options, OdinBuildOption{flag = "define", value = {"GPU_STAGE_TIMING=true"}})
+			gpuStageTiming = true
+		case "-cpu-stage-timing":
+			cpuStageTiming = true
+		case "-plan-stage-timing":
+			planStageTiming = true
+		case "-all-stage-timing":
+			cpuStageTiming = true
+			gpuStageTiming = true
+			planStageTiming = true
 		case "-asan":
 			EKHOS_ADDRESS_SANITIZER = true
 		case "-no-break":
 			append(&options, ..odin_defines_to_options({{"MESSENGER_BREAKPOINT", "false"}}))
 		}
+	}
+	if cpuStageTiming do append(&options, OdinBuildOption{flag = "define", value = {"CPU_STAGE_TIMING=true"}})
+	if gpuStageTiming do append(&options, OdinBuildOption{flag = "define", value = {"GPU_STAGE_TIMING=true"}})
+	if planStageTiming do append(&options, OdinBuildOption{flag = "define", value = {"PLAN_STAGE_TIMING=true"}})
+	if cpuStageTiming || gpuStageTiming || planStageTiming {
+		append(&options, OdinBuildOption{flag = "define", value = {"ODIN_TEST_FANCY=false"}})
 	}
 
 	features := si.cpu_features()
@@ -258,12 +275,14 @@ build_pffft :: proc() -> (ok := true) {
 	clone_required_submodules() or_return
 	compilerPath, compilerKind := detect_cpp_compiler() or_return
 	tmpDirectory := TMP_DIRECTORY + "pffft/"
+	optimizationLevel: CppOptimizationLevel = .Debug
+	if EKHOS_BUILD_MODE == "release" do optimizationLevel = .Speed
 	compileParameters: CppCompileParameters = {
 		compilerPath      = compilerPath,
 		outputType        = .ObjectFiles,
 		sourcePaths       = {PFFFT_SOURCE},
 		outputPath        = assume(os.join_path({tmpDirectory, assume(os.join_filename("pffft", get_cpp_object_extension(compilerKind), context.temp_allocator))}, context.temp_allocator)),
-		optimizationLevel = .Debug,
+		optimizationLevel = optimizationLevel,
 		fastMath          = false,
 		debug             = EKHOS_BUILD_MODE == "debug",
 	}

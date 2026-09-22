@@ -44,7 +44,7 @@
             "inAgents": true
         },
         {
-            "label": "Build Tests (Profile)",
+            "label": "Build Benchmark",
             "command": "build.exe",
             "linux": {
                 "command": "./build"
@@ -52,7 +52,8 @@
             "args": [
                 "-test",
                 "-release",
-                "-profile",
+                "-gpu-stage-timing",
+                "-cpu-stage-timing",
             ],
             "windows": {},
             "dependsOn": "Build Builder",

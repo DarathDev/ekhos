@@ -22,6 +22,7 @@ assert :: utility.assert
 assume :: utility.assume
 
 ENABLE_RENDERDOC :: bool(#config(ENABLE_RENDERDOC, true))
+PLAN_STAGE_TIMING :: bool(#config(PLAN_STAGE_TIMING, false))
 
 PULSE_CONV_SAMPLE_WORKGROUP_SIZE :: 64
 PULSE_CONVOLUTION_TILE_SIZE :: 256
@@ -173,6 +174,20 @@ plan_simulation :: proc(
 	ok := true,
 ) {
 	utility.prof_scoped(#procedure)
+	when PLAN_STAGE_TIMING {
+		planStopwatch: time.Stopwatch
+		time.stopwatch_start(&planStopwatch)
+		defer {
+			time.stopwatch_stop(&planStopwatch)
+			planningDuration := time.stopwatch_duration(planStopwatch)
+			#partial switch &sim in simulator {
+			case cpuSimulator:
+				sim.timing.planning = planningDuration
+			case vkSimulator:
+				sim.timing.planning = planningDuration
+			}
+		}
+	}
 	switch &sim in simulator {
 	case cpuSimulator:
 		assert(settings.cpuSettings.threadCount == 1, "CPU multi-threading is not implemented yet; set CpuSettings.ThreadCount to 1")
@@ -235,6 +250,15 @@ plan_simulation :: proc(
 		check(plan_cpu_simulation(&sim, settings)) or_return
 	}
 	return
+}
+
+log_simulation_timing :: proc(simulator: ^Simulator, label: string, loc := #caller_location) {
+	#partial switch &sim in simulator {
+	case cpuSimulator:
+		log_cpu_timing(sim.timing, label, loc)
+	case vkSimulator:
+		log_gpu_timing(sim.timing, label, loc)
+	}
 }
 
 response_length :: proc(responses: $T, index: u16) -> i32 {

@@ -31,6 +31,10 @@ The build program accepts the following options:
 | `-release` or `-r` | Build an optimized release. |
 | `-matlab` | Also copy the library to `matlab/EkhosLib.a`. |
 | `-profile` | Enable profiling instrumentation. |
+| `-cpu-stage-timing` | Enable CPU stage timing instrumentation. |
+| `-gpu-stage-timing` | Enable Vulkan GPU stage timing instrumentation. |
+| `-plan-stage-timing` | Enable CPU and Vulkan GPU planning stage timing. |
+| `-all-stage-timing` | Enable CPU, Vulkan GPU, and planning stage timing. |
 | `-asan` | Enable AddressSanitizer in debug builds. |
 | `-no-break` | Disable debugger breakpoints from the messenger. |
 

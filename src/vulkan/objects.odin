@@ -782,6 +782,43 @@ destroy_timeline_semaphore :: proc(device: Device, semaphore: TimelineSemaphore)
 	vk.DestroySemaphore(device.device, auto_cast semaphore, nil)
 }
 
+/* --------------------- */
+/* ----- Query Pool ----- */
+/* --------------------- */
+
+create_timestamp_query_pool :: proc(device: Device, queryCount: u32) -> (queryPool: vk.QueryPool, result: vk.Result) {
+	createInfo: vk.QueryPoolCreateInfo = {
+		sType      = .QUERY_POOL_CREATE_INFO,
+		queryType  = .TIMESTAMP,
+		queryCount = queryCount,
+	}
+	vk.CreateQueryPool(device.device, &createInfo, nil, &queryPool) or_return
+	return
+}
+
+destroy_query_pool :: proc(device: Device, queryPool: vk.QueryPool) {
+	vk.DestroyQueryPool(device.device, queryPool, nil)
+}
+
+reset_query_pool :: proc(device: Device, queryPool: vk.QueryPool, queryCount: u32) -> vk.Result {
+	vk.ResetQueryPool(device.device, queryPool, 0, queryCount)
+	return .SUCCESS
+}
+
+get_timestamp_query_results :: proc(device: Device, queryPool: vk.QueryPool, queryCount: u32, results: []u64) -> vk.Result {
+	assert(len(results) >= int(queryCount))
+	return vk.GetQueryPoolResults(
+		device.device,
+		queryPool,
+		0,
+		queryCount,
+		int(queryCount) * size_of(u64),
+		raw_data(results),
+		size_of(u64),
+		{._64, .WAIT},
+	)
+}
+
 /* ------------------ */
 /* ----- Events ----- */
 /* ------------------ */
