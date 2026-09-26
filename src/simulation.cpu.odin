@@ -38,6 +38,7 @@ DATALINE_BATCH_SIZE :: 1024
 PROGRESS_LOG_DELAY_THRESHOLD :: 20.0 * time.Second
 PROGRESS_LOG_INTERVAL :: 20.0 * time.Second
 CPU_STAGE_TIMING :: bool(#config(CPU_STAGE_TIMING, false))
+CPU_TIME_DOMAIN_THRESHOLD :: int(#config(CPU_TIME_DOMAIN_THRESHOLD, 128))
 
 CpuStageTiming :: struct {
 	allocation:       time.Duration,
@@ -146,6 +147,11 @@ simulate_cpu :: proc(
 	defer delete(transmissionSampleRanges)
 	defer delete(transmissionImpulses)
 	defer delete(scatterBatchMemory)
+	pffftSetupCache := make(map[int]pffft.PffftSession, context.allocator)
+	defer {
+		for _, session in pffftSetupCache do pffft.destroy_setup(session)
+		delete(pffftSetupCache)
+	}
 	utility.prof_end()
 	when CPU_STAGE_TIMING {
 		cpu_stage_timing_add(&timing.allocation, &stageStopwatch)
@@ -303,7 +309,7 @@ simulate_cpu :: proc(
 					fftCount := pffft.adjust_n(auto_cast (maxTransmissionSampleCount + maxReceiveChannelSampleCount - 1))
 					scatterData.fftCount = auto_cast fftCount
 
-					if fftCount < 128 {
+					if fftCount < CPU_TIME_DOMAIN_THRESHOLD {
 						append(&timeDomainScatters, scatterData)
 					} else {
 						append(&frequencyDomainScatters, scatterData)
@@ -329,6 +335,7 @@ simulate_cpu :: proc(
 						batchTxCount,
 						batchRxCount,
 						frequencyDomainScatters[:],
+						&pffftSetupCache,
 						data[(rxBatchStart + auto_cast transmissionIndex * receiveChannelCount) * sampleCount:],
 					)
 					when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.convolution, &stageStopwatch)
@@ -509,7 +516,12 @@ convolve_time_domain :: proc(sampleCount, transmissionCount, receiveChannelCount
 	}
 }
 
-convolve_frequency_domain :: proc(sampleCount, transmissionCount, receiveChannelCount: i32, scatters: []CpuScatterData, data: []f32) {
+convolve_frequency_domain :: proc(
+	sampleCount, transmissionCount, receiveChannelCount: i32,
+	scatters: []CpuScatterData,
+	setupCache: ^map[int]pffft.PffftSession,
+	data: []f32,
+) {
 	utility.prof_scoped(#procedure)
 
 	maxFftCount: i32
@@ -542,15 +554,19 @@ convolve_frequency_domain :: proc(sampleCount, transmissionCount, receiveChannel
 				if minSample >= maxSample do continue
 
 				fftCount := pffft.adjust_n(auto_cast (transmissionSampleCount + receiveChannelSampleCount - 1))
-				pffftSession := pffft.new_setup(fftCount, .REAL)
+				pffftSession, exists := setupCache^[fftCount]
+				if !exists {
+					pffftSession = pffft.new_setup(fftCount, .REAL)
 				assert(pffftSession != nil)
+					map_insert(setupCache, fftCount, pffftSession)
+				}
 
 				transmissionImpulse := scatterData.transmissionImpulses[transmissionIndex * sampleCount:][:transmissionSampleCount]
 				receiveChannelImpulse := scatterData.receiveChannelImpulses[receiveChannelIndex * sampleCount:][:receiveChannelSampleCount]
-				slice.zero(transmissionFourier[:fftCount])
-				slice.zero(receiveChannelFourier[:fftCount])
 				copy(transmissionFourier[:transmissionSampleCount], transmissionImpulse)
 				copy(receiveChannelFourier[:receiveChannelSampleCount], receiveChannelImpulse)
+				slice.zero(transmissionFourier[transmissionSampleCount:fftCount])
+				slice.zero(receiveChannelFourier[receiveChannelSampleCount:fftCount])
 				pffft.transform(pffftSession, raw_data(transmissionFourier), raw_data(transmissionFourier), raw_data(convolutionData), .FORWARD)
 				pffft.transform(pffftSession, raw_data(receiveChannelFourier), raw_data(receiveChannelFourier), raw_data(convolutionData), .FORWARD)
 
@@ -563,8 +579,6 @@ convolve_frequency_domain :: proc(sampleCount, transmissionCount, receiveChannel
 					1.0 / f32(fftCount),
 				)
 				pffft.transform(pffftSession, raw_data(convolutionData), raw_data(convolutionData), raw_data(transmissionFourier), .BACKWARD)
-				pffft.destroy_setup(pffftSession)
-
 				startSample := transmissionSampleRange.minSample + receiveChannelSampleRange.minSample
 				for sample := minSample; sample < maxSample; sample += 1 {
 					receiveDataLine[sample] += convolutionData[sample - startSample]
