@@ -1,6 +1,5 @@
 package ekhos
 
-import "base:runtime"
 import "core:log"
 import "core:math"
 import "core:math/bits"
@@ -213,9 +212,7 @@ plan_simulation :: proc(
 		assert(receiveChannel.impulse == 0 || int(receiveChannel.impulse) <= len(impulses))
 	}
 
-	sort_scatters_by_distance_interval(scatters, transmissions, receiveChannels, elements)
-
-	distanceRange, _, _ := find_distance_limits(transmissions, receiveChannels, elements, scatters)
+	distanceRange, apertureSampleCount := sort_scatters_by_distance_interval(scatters, transmissions, receiveChannels, elements, settings^)
 	settings.startTime = distanceRange.minDistance / settings.speedOfSound
 	sampleRange := distance_range_to_sample_range(distanceRange, settings.speedOfSound, settings.samplingFrequency, settings.startTime)
 	settings.sampleCount = sample_range_sample_count(sampleRange)
@@ -237,7 +234,7 @@ plan_simulation :: proc(
 	// PFFFT requires this for the CPU simulator, and it avoids some potential warp divergence on the GPU
 	settings.sampleCount = (settings.sampleCount + 31) & ~i32(31)
 
-	apertureSampleCount, scattererBatchSize := plan_scatterer_batching(simulator, settings^, transmissions, receiveChannels, elements, scatters)
+	scattererBatchSize: u32 = max(u32(1), min(u32(len(scatters)), u32(256)))
 
 	switch &sim in simulator {
 	case vkSimulator:
@@ -276,54 +273,6 @@ normalize_element_normals :: proc(elements: #soa[]RectangularElement) {
 	}
 }
 
-plan_scatterer_batching :: proc(
-	simulator: ^Simulator,
-	settings: SimulationSettings,
-	transmissions: []Transmission,
-	receiveChannels: []ReceiveChannel,
-	elements: #soa[]RectangularElement,
-	scatters: []Scatter,
-) -> (
-	apertureSampleCount, scattererBatchSize: u32,
-) {
-	maxSharedMemoryAllowed: u32 = 32 * runtime.Kilobyte
-	if sim, isVk := simulator.(vkSimulator); isVk {
-		maxSharedMemoryAllowed = sim.device.physicalDevice.properties.limits.maxComputeSharedMemorySize
-	}
-
-	scatterCount := u32(len(scatters))
-	initialBatchSize: u32 = 256
-	scattererBatchSize = max(u32(1), min(scatterCount, initialBatchSize))
-
-	if scatterCount == 0 do return 0, scattererBatchSize
-
-	for {
-		maxBatchApertureSampleCount: u32 = 0
-		for batchStart: u32 = 0; batchStart < scatterCount; batchStart += scattererBatchSize {
-			batchEnd := min(batchStart + scattererBatchSize, scatterCount)
-			batchScatters := scatters[batchStart:batchEnd]
-
-			_, batchTransmitDistanceRange, batchReceiveDistanceRange := find_distance_limits(transmissions, receiveChannels, elements, batchScatters)
-
-			batchTransmitSampleRange := distance_range_to_sample_range(batchTransmitDistanceRange, settings.speedOfSound, settings.samplingFrequency, 0)
-			batchReceiveSampleRange := distance_range_to_sample_range(batchReceiveDistanceRange, settings.speedOfSound, settings.samplingFrequency, 0)
-
-			batchApertureSampleCount := u32(max(sample_range_sample_count(batchTransmitSampleRange), sample_range_sample_count(batchReceiveSampleRange))) + 1
-			maxBatchApertureSampleCount = max(maxBatchApertureSampleCount, batchApertureSampleCount)
-		}
-
-		sharedMemoryNeeded := (PULSE_CONVOLUTION_TILE_SIZE + PULSE_CONVOLUTION_TILE_SIZE + PULSE_CONV_SAMPLE_WORKGROUP_SIZE - 1) * u32(size_of(f32))
-		if sharedMemoryNeeded <= maxSharedMemoryAllowed || scattererBatchSize <= 1 {
-			apertureSampleCount = maxBatchApertureSampleCount
-			break
-		}
-
-		scattererBatchSize = max(u32(1), scattererBatchSize / 2)
-	}
-
-	return
-}
-
 calculate_array_centroid :: proc(elements: #soa[]RectangularElement) -> [3]f32 {
 	if len(elements) == 0 do return {0, 0, 0}
 	sum: [3]f32 = {0, 0, 0}
@@ -352,8 +301,8 @@ DistanceBounds :: struct {
 DEFAULT_DISTANCE_BOUNDS: DistanceBounds : {minimum = {math.INF_F32, math.INF_F32, math.INF_F32}, maximum = {-math.INF_F32, -math.INF_F32, -math.INF_F32}}
 
 DistanceRepresentatives :: struct {
-	transmit: [dynamic; 8][3]f32,
-	receive:  [dynamic; 8][3]f32,
+	transmit: [8][3]f32,
+	receive:  [8][3]f32,
 }
 
 sort_scatters_by_distance_interval :: proc(
@@ -361,21 +310,26 @@ sort_scatters_by_distance_interval :: proc(
 	transmissions: []Transmission,
 	receiveChannels: []ReceiveChannel,
 	elements: #soa[]RectangularElement,
+	settings: SimulationSettings,
+) -> (
+	distanceRange: DistanceRange,
+	apertureSampleCount: u32,
 ) {
-	if len(scatters) <= 1 do return
+	utility.prof_scoped(#procedure)
+	defer assert(distanceRange.maxDistance - distanceRange.minDistance >= 0)
+	// Any distance range greater than 10m is likely an error, and furthermore would require an unreasonable amount of memory
+	defer assert(distanceRange.maxDistance - distanceRange.minDistance < 10)
 
 	transmitBounds := DEFAULT_DISTANCE_BOUNDS
 	for transmission in transmissions {
 		for transmissionElement in transmission.elements {
-			transmitBounds.minimum = linalg.min(transmitBounds.minimum, elements[transmissionElement.index].position)
-			transmitBounds.maximum = linalg.min(transmitBounds.maximum, elements[transmissionElement.index].position)
+			distance_bounds_add_element(&transmitBounds, elements[transmissionElement.index])
 		}
 	}
 	receiveBounds := DEFAULT_DISTANCE_BOUNDS
 	for receiveChannel in receiveChannels {
 		for receiveChannelElement in receiveChannel.elements {
-			receiveBounds.minimum = linalg.min(receiveBounds.minimum, elements[receiveChannelElement.index].position)
-			receiveBounds.maximum = linalg.min(receiveBounds.maximum, elements[receiveChannelElement.index].position)
+			distance_bounds_add_element(&receiveBounds, elements[receiveChannelElement.index])
 		}
 	}
 
@@ -383,13 +337,16 @@ sort_scatters_by_distance_interval :: proc(
 	distance_bounds_make_representatives(transmitBounds, &representatives.transmit)
 	distance_bounds_make_representatives(receiveBounds, &representatives.receive)
 
+	minTransmitDistance, maxTransmitDistance: f32 = math.INF_F32, 0
+	minReceiveDistance, maxReceiveDistance: f32 = math.INF_F32, 0
 	distanceMidpoints := make([]f32, len(scatters), context.allocator)
 	defer delete(distanceMidpoints)
 	for scatterIndex in 0 ..< len(scatters) {
+		scatter := scatters[scatterIndex]
 		transmitMinimum: f32 = math.INF_F32
 		transmitMaximum: f32 = 0
 		for representative in representatives.transmit {
-			distance := linalg.length(scatters[scatterIndex].position - representative)
+			distance := linalg.length(scatter.position - representative)
 			transmitMinimum = min(transmitMinimum, distance)
 			transmitMaximum = max(transmitMaximum, distance)
 		}
@@ -397,34 +354,49 @@ sort_scatters_by_distance_interval :: proc(
 		receiveMinimum: f32 = math.INF_F32
 		receiveMaximum: f32 = 0
 		for representative in representatives.receive {
-			distance := linalg.length(scatters[scatterIndex].position - representative)
+			distance := linalg.length(scatter.position - representative)
 			receiveMinimum = min(receiveMinimum, distance)
 			receiveMaximum = max(receiveMaximum, distance)
 		}
 
+		minTransmitDistance = min(minTransmitDistance, transmitMinimum)
+		maxTransmitDistance = max(maxTransmitDistance, transmitMaximum)
+		minReceiveDistance = min(minReceiveDistance, receiveMinimum)
+		maxReceiveDistance = max(maxReceiveDistance, receiveMaximum)
 		distanceMidpoints[scatterIndex] = (transmitMinimum + transmitMaximum + receiveMinimum + receiveMaximum) / 2
 	}
 
-	indices := slice.sort_with_indices(distanceMidpoints, context.allocator)
-	defer delete(indices)
-	slice.sort_from_permutation_indices(scatters, indices)
+	if len(scatters) > 1 {
+		indices := slice.sort_with_indices(distanceMidpoints, context.allocator)
+		defer delete(indices)
+		slice.sort_from_permutation_indices(scatters, indices)
+	}
+
+	distanceRange = {minTransmitDistance + minReceiveDistance, maxTransmitDistance + maxReceiveDistance}
+	transmitSampleRange := distance_range_to_sample_range({minTransmitDistance, maxTransmitDistance}, settings.speedOfSound, settings.samplingFrequency, 0)
+	receiveSampleRange := distance_range_to_sample_range({minReceiveDistance, maxReceiveDistance}, settings.speedOfSound, settings.samplingFrequency, 0)
+	apertureSampleCount = u32(max(sample_range_sample_count(transmitSampleRange), sample_range_sample_count(receiveSampleRange))) + 1
+	return
 }
 
 distance_bounds_add :: proc(bounds: ^DistanceBounds, position: [3]f32) {
 	bounds.minimum = linalg.min(bounds.minimum, position)
-	bounds.maximum = linalg.min(bounds.maximum, position)
+	bounds.maximum = linalg.max(bounds.maximum, position)
 }
 
-distance_bounds_make_representatives :: proc(bounds: DistanceBounds, representatives: ^[dynamic; 8][3]f32) {
+distance_bounds_add_element :: proc(bounds: ^DistanceBounds, element: RectangularElement) {
+	elementExtent := linalg.length(element.size) / 2
+	distance_bounds_add(bounds, element.position - elementExtent)
+	distance_bounds_add(bounds, element.position + elementExtent)
+}
+
+distance_bounds_make_representatives :: proc(bounds: DistanceBounds, representatives: ^[8][3]f32) {
 	for corner in 0 ..< 8 {
-		runtime.append(
-			representatives,
-			[3]f32 {
+		representatives[corner] = [3]f32 {
 				((corner >> 0) & 1) == 0 ? bounds.minimum.x : bounds.maximum.x,
 				((corner >> 1) & 1) == 0 ? bounds.minimum.y : bounds.maximum.y,
 				((corner >> 2) & 1) == 0 ? bounds.minimum.z : bounds.maximum.z,
-			},
-		)
+		}
 	}
 }
 
@@ -597,54 +569,6 @@ scatter_hilbert_code :: proc(position, minimum, maximum: [3]f32) -> u32 {
 		}
 	}
 	return result
-}
-
-find_distance_limits :: proc(
-	transmissions: []Transmission,
-	receiveChannels: []ReceiveChannel,
-	elements: #soa[]RectangularElement,
-	scatters: []Scatter,
-) -> (
-	distanceRange, transmitDistanceRange, receiveDistanceRange: DistanceRange,
-) {
-	utility.prof_scoped(#procedure)
-	defer assert(distanceRange.maxDistance - distanceRange.minDistance >= 0)
-	defer assert(transmitDistanceRange.maxDistance - transmitDistanceRange.minDistance >= 0)
-	defer assert(receiveDistanceRange.maxDistance - receiveDistanceRange.minDistance >= 0)
-	// Any distance range greater than 10m is likely an error, and furthermore would require an unreasonable amount of memory
-	defer assert(distanceRange.maxDistance - distanceRange.minDistance < 10)
-	defer assert(transmitDistanceRange.maxDistance - transmitDistanceRange.minDistance < 10)
-	defer assert(receiveDistanceRange.maxDistance - receiveDistanceRange.minDistance < 10)
-
-	minTransmitDistance, maxTransmitDistance: f32 = math.INF_F32, 0
-	minReceiveDistance, maxReceiveDistance: f32 = math.INF_F32, 0
-	for scatter in scatters {
-		for transmission in transmissions {
-			for transmissionElement in transmission.elements {
-				transmit := elements[transmissionElement.index]
-				delta := linalg.length(scatter.position - transmit.position)
-				elementDelta := linalg.length(transmit.size) / 2
-				minTransmitDistance = min(minTransmitDistance, delta - elementDelta)
-				maxTransmitDistance = max(maxTransmitDistance, delta + elementDelta)
-			}
-		}
-
-		for receiveChannel in receiveChannels {
-			for receiveChannelElement in receiveChannel.elements {
-				element := receiveChannelElement
-				receive := elements[element.index]
-				delta := linalg.length(scatter.position - receive.position)
-				elementDelta := linalg.length(receive.size) / 2
-				minReceiveDistance = min(minReceiveDistance, delta - elementDelta)
-				maxReceiveDistance = max(maxReceiveDistance, delta + elementDelta)
-			}
-		}
-	}
-
-	transmitDistanceRange = {minTransmitDistance, maxTransmitDistance}
-	receiveDistanceRange = {minReceiveDistance, maxReceiveDistance}
-	distanceRange = {minTransmitDistance + minReceiveDistance, maxTransmitDistance + maxReceiveDistance}
-	return
 }
 
 launch_or_show_renderdoc_ui :: proc(rdoc_api: rdoc.Api) {
