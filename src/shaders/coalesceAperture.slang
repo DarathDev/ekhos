@@ -44,8 +44,13 @@ void main(uint3 GlobalInvocationID: SV_DispatchThreadID) {
 
   float sampleSum = 0;
   uint memberCount = pushData.getMemberCount(elementSetIndex);
+  uint memberBaseOffset = CoalesceTransmissions ? pushData.getTransmissionBaseOffsets()[elementSetIndex]
+                                                : pushData.getReceiveChannelBaseOffsets()[elementSetIndex];
   for (uint memberIndex = 0; memberIndex < memberCount; memberIndex++) {
-    SetMember member = pushData.getSetMember(elementSetIndex, memberIndex);
+    SetMember member;
+    member.index = pushData.elementSetMembers[memberBaseOffset + memberIndex];
+    member.apodization = ((float *)pushData.elementSetMembers)[memberBaseOffset + memberCount + memberIndex];
+    member.delay = ((float *)pushData.elementSetMembers)[memberBaseOffset + 2 * memberCount + memberIndex];
 
     ApertureResponse memberResponse = getResponse(member, scattererIndex, dt);
     if (memberResponse.scale == 0)
@@ -74,18 +79,18 @@ float sample_rect_aperture(in int i, in float4 nRectT) {
   }
 }
 
-float b2f(bool v) { return v ? 1.0f : 0.0f; }
-
 float sample_rect_aperture_cumulative(in float n, in float4 rectSamples) {
   bool qDelta = rectSamples.w - rectSamples.x <= 1.f;
   bool qRect = !qDelta && (rectSamples.y - rectSamples.x <= EPSILON);
   bool qTri = !qDelta && !qRect && (rectSamples.z - rectSamples.y <= EPSILON);
-  bool qTrap = !(qDelta | qRect | qTri);
 
-  float sDelta = n >= rectSamples.x ? 1 : 0;
+  if (qDelta)
+    return n >= rectSamples.x ? 1 : 0;
 
-  float dy = rectSamples.z - rectSamples.y;
-  float sRect = dy <= 0.f ? 0.0f : dy * saturate((n - rectSamples.y) / dy);
+  if (qRect) {
+    float dy = rectSamples.z - rectSamples.y;
+    return dy <= 0.f ? 0.0f : dy * saturate((n - rectSamples.y) / dy);
+  }
 
   float dxLeft = rectSamples.y - rectSamples.x;
   float sTriLeftSat = dxLeft <= 0.f ? 0.0f : saturate((n - rectSamples.x) / dxLeft);
@@ -95,44 +100,39 @@ float sample_rect_aperture_cumulative(in float n, in float4 rectSamples) {
   float sTriRightSat = dxRight <= 0.f ? 0.0f : saturate((rectSamples.w - n) / dxRight);
   float sTriRight = 0.5f * dxRight * (1.f - sTriRightSat * sTriRightSat);
 
-  float value =
-      b2f(qDelta) * sDelta + b2f(qRect) * sRect + b2f(qTri) * (sTriLeft + sTriRight) + b2f(qTrap) * (sTriLeft + sRect + sTriRight);
-  return value;
+  if (qTri)
+    return sTriLeft + sTriRight;
+
+  float dy = rectSamples.z - rectSamples.y;
+  float sRect = dy <= 0.f ? 0.0f : dy * saturate((n - rectSamples.y) / dy);
+  return sTriLeft + sRect + sTriRight;
 }
 
 float sample_rect_aperture_discrete(in float n, in float4 rectSamples) {
   bool qDelta = rectSamples.w - rectSamples.x <= 1.f;
   bool qRect = !qDelta && (rectSamples.y - rectSamples.x <= EPSILON);
   bool qTri = !qDelta && !qRect && (rectSamples.z - rectSamples.y <= EPSILON);
-  bool qTrap = !(qDelta | qRect | qTri);
 
-  bool qRectLeft = (n >= rectSamples.y - 0.5f) & (n <= rectSamples.y + 0.5f);
-  bool qRectCenter = (n > rectSamples.y + 0.5f) & (n <= rectSamples.z - 0.5f);
-  bool qRectRight = (n > rectSamples.z - 0.5f) & (n <= rectSamples.z + 0.5f);
+  if (qDelta)
+    return saturate(1.f - abs(n - rectSamples.x));
 
-  bool qTriLeft = (n >= rectSamples.x) & (n <= rectSamples.y);
-  bool qTriRight = (n > rectSamples.z) & (n <= rectSamples.w);
-
-  bool qTrapLeft = qTriLeft;
-  bool qTrapCenter = (n > rectSamples.y) & (n <= rectSamples.z);
-  bool qTrapRight = qTriRight;
-
-  float sDelta = 1.f - abs(n - rectSamples.x);
-
-  float sRectLeft = n - (rectSamples.y - 0.5f);
-  float sRectCenter = 1.f;
-  float sRectRight = 1.f - (n - (rectSamples.z - 0.5f));
+  if (qRect) {
+    bool left = (n >= rectSamples.y - 0.5f) & (n <= rectSamples.y + 0.5f);
+    bool center = (n > rectSamples.y + 0.5f) & (n <= rectSamples.z - 0.5f);
+    bool right = (n > rectSamples.z - 0.5f) & (n <= rectSamples.z + 0.5f);
+    float leftValue = n - (rectSamples.y - 0.5f);
+    float rightValue = 1.f - (n - (rectSamples.z - 0.5f));
+    return saturate((left ? leftValue : 0) + (center ? 1.f : 0) + (right ? rightValue : 0));
+  }
 
   float sTriLeft = (n - rectSamples.x) / (rectSamples.y - rectSamples.x + EPSILON);
   float sTriRight = (1.f - (n - rectSamples.z) / (rectSamples.w - rectSamples.z + EPSILON));
 
-  float sTrapLeft = sTriLeft;
-  float sTrapCenter = sRectCenter;
-  float sTrapRight = sTriRight;
+  bool left = (n >= rectSamples.x) & (n <= rectSamples.y);
+  bool right = (n > rectSamples.z) & (n <= rectSamples.w);
+  if (qTri)
+    return saturate((left ? sTriLeft : 0) + (right ? sTriRight : 0));
 
-  float value = b2f(qDelta) * sDelta +
-                b2f(qRect) * ((b2f(qRectLeft) * sRectLeft) + (b2f(qRectCenter) * sRectCenter) + (b2f(qRectRight) * sRectRight)) + //
-                b2f(qTri) * ((b2f(qTriLeft) * sTriLeft) + (b2f(qTriRight) * sTriRight)) +                                         //
-                b2f(qTrap) * ((b2f(qTrapLeft) * sTrapLeft) + (b2f(qTrapCenter) * sTrapCenter) + (b2f(qTrapRight) * sTrapRight));
-  return saturate(value);
+  bool center = (n > rectSamples.y) & (n <= rectSamples.z);
+  return saturate((left ? sTriLeft : 0) + (center ? 1.f : 0) + (right ? sTriRight : 0));
 }
