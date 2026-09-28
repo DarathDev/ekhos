@@ -414,8 +414,11 @@ plan_vulkan_simulator :: proc(
 	pulseEchoSharedMemory := (pulseConvTileSize + pulseConvTileSize + pulseConvSampleWorkgroupSize - 1) * size_of(f32)
 	assert(pulseEchoSharedMemory <= maxComputeSharedMemorySize, "Pulse echo convolution shared memory exceeds device maxComputeSharedMemorySize")
 
-	maxStorageBufferRange := u32(limits.maxStorageBufferRange)
-	maxBufferLimit := u32(simulator.device.physicalDevice.maxBufferSize)
+	maxStorageBufferRange := vk.DeviceSize(limits.maxStorageBufferRange)
+	maxBufferLimit := simulator.device.physicalDevice.maxBufferSize
+	effectiveBufferLimit := maxStorageBufferRange
+	if maxBufferLimit > 0 do effectiveBufferLimit = min(effectiveBufferLimit, maxBufferLimit)
+	if effectiveBufferLimit == 0 do effectiveBufferLimit = max(maxStorageBufferRange, maxBufferLimit)
 
 	elementCount := u32(len(elements))
 	transmissionCount := u32(len(transmissions))
@@ -441,8 +444,8 @@ plan_vulkan_simulator :: proc(
 
 	targetBatchSize := max(u32(1), min(scatterCount, 256))
 	maxBatchFromBuffer: u32 = targetBatchSize
-	if fixedHeaderBytes < maxBufferLimit && bytesPerScatterer > 0 {
-		maxBatchFromBuffer = (maxBufferLimit - fixedHeaderBytes) / bytesPerScatterer
+	if vk.DeviceSize(fixedHeaderBytes) < effectiveBufferLimit && bytesPerScatterer > 0 {
+		maxBatchFromBuffer = u32((effectiveBufferLimit - vk.DeviceSize(fixedHeaderBytes)) / vk.DeviceSize(bytesPerScatterer))
 		simulator.info.scattererBatchSize = max(u32(1), min(targetBatchSize, maxBatchFromBuffer))
 	} else {
 		simulator.info.scattererBatchSize = targetBatchSize
@@ -461,7 +464,7 @@ plan_vulkan_simulator :: proc(
 		maxComputeSharedMemorySize,
 		fixedHeaderBytes,
 		bytesPerScatterer,
-		maxBufferLimit,
+		effectiveBufferLimit,
 		maxStorageBufferRange,
 		maxBatchFromBuffer,
 		targetBatchSize,
@@ -735,15 +738,9 @@ simulate_vulkan :: proc(
 		computeCommandBuffers := check(
 			ekhos_vk.get_command_buffers(device, &simulator.computeCommandPool, commandBufferCount, allocator = context.temp_allocator),
 		) or_return
-		slotComputeTimelineValues: [MAX_FRAMES_IN_FLIGHT]u64
 		for computeCommandBuffer, commandBufferIndex in computeCommandBuffers {
 			commandStart := windowOffset + commandBufferIndex * SCATTER_BATCHES_PER_COMMAND_BUFFER * int(scatterBatchSize)
 			commandEnd := min(commandStart + SCATTER_BATCHES_PER_COMMAND_BUFFER * int(scatterBatchSize), windowEnd)
-			ringIndex := commandBufferIndex % len(resources.scatterBuffers)
-			if slotComputeTimelineValues[ringIndex] > 0 {
-				timelineWait.value[0] = slotComputeTimelineValues[ringIndex]
-				check(ekhos_vk.wait_semaphores(device, timelineWait, auto_cast time.duration_nanoseconds(auto_cast DISPATCH_TIMEOUT))) or_return
-			}
 			commandBuffer = computeCommandBuffer
 			ekhos_vk.cmd_begin(commandBuffer, true) or_return
 			when GPU_STAGE_TIMING {
@@ -899,6 +896,22 @@ simulate_vulkan :: proc(
 				) or_return
 				gpu_timing_end(simulator, commandBuffer, pulseEchoQuery)
 				ekhos_vk.cmd_end_label(commandBuffer)
+				ekhos_vk.cmd_pipeline_barrier(
+					commandBuffer,
+					{},
+					{
+						{
+							buffer = resources.responseBuffer.main.buffer,
+							size = resources.responseBuffer.main.size,
+							offset = 0,
+							srcStageMask = {.COMPUTE_SHADER},
+							srcAccessMask = {.SHADER_WRITE},
+							dstStageMask = {.COMPUTE_SHADER},
+							dstAccessMask = {.SHADER_READ, .SHADER_WRITE},
+						},
+					},
+					{},
+				)
 			}
 
 			ekhos_vk.cmd_end_label(commandBuffer)
@@ -912,7 +925,6 @@ simulate_vulkan :: proc(
 				scatterComputeWaits,
 				{{semaphore = simulator.computeTimeline, value = simulator.computeTimelineValue, stageMask = {.ALL_COMMANDS}}},
 			) or_return
-			slotComputeTimelineValues[ringIndex] = simulator.computeTimelineValue
 		}
 		commandBuffer, lastProgressLogTime = run_vk_scatter_window(
 			simulator,
@@ -948,8 +960,8 @@ simulate_vulkan :: proc(
 				buffer = resources.responseBuffer.main.buffer,
 				size = resources.responseBuffer.main.size,
 				offset = 0,
-				srcStageMask = {.COMPUTE_SHADER},
-				srcAccessMask = {.SHADER_WRITE},
+				srcStageMask = {.COMPUTE_SHADER, .TRANSFER},
+				srcAccessMask = {.SHADER_WRITE, .TRANSFER_WRITE},
 				dstStageMask = {.TRANSFER, .HOST},
 				dstAccessMask = {.TRANSFER_READ},
 			},
