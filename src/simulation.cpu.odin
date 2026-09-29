@@ -6,15 +6,39 @@ import "core:math/linalg"
 import "core:mem"
 import "core:simd"
 import "core:slice"
+import "core:thread"
 import "core:time"
-import "import:pffft"
+import ekhos_thread "ekhos:thread"
 import utility "ekhos:utility"
+import "import:pffft"
 
 assert :: utility.assert
 
 cpuSimulator :: struct {
-	info:   cpuSimulationInfo,
-	timing: CpuTiming,
+	info:    cpuSimulationInfo,
+	timing:  CpuTiming,
+	allocator: mem.Allocator,
+	lanes:   []ekhos_thread.Lane,
+	threads: []^thread.Thread,
+	job:     CpuSimulationJob,
+	stop:    bool,
+}
+
+CpuSimulationJob :: struct {
+	settings:        ^SimulationSettings,
+	transmissions:   []Transmission,
+	receiveChannels: []ReceiveChannel,
+	elements:        #soa[]RectangularElement,
+	scatters:        []Scatter,
+	impulses:        []TransducerImpulse,
+	excitations:     []Excitation,
+	data:            []f32,
+}
+
+CpuWorker :: struct {
+	simulator: ^cpuSimulator,
+	lane:      ^ekhos_thread.Lane,
+	allocator: mem.Allocator,
 }
 
 cpuSimulationInfo :: struct {
@@ -23,15 +47,96 @@ cpuSimulationInfo :: struct {
 }
 
 CpuTiming :: struct {
-	planning: time.Duration,
+	planning:   time.Duration,
 	simulation: time.Duration,
-	stages:   CpuStageTiming,
+	stages:     CpuStageTiming,
 }
 
-create_cpu_simulator :: proc() -> (simulator: cpuSimulator, ok := true) { return }
-destroy_cpu_simulator :: proc(simulator: ^cpuSimulator) { return }
+create_cpu_simulator :: proc(threadCount: int = 1) -> (simulator: cpuSimulator, ok := true) {
+	threadCount := threadCount
+	threadCount = max(threadCount, 1)
+	simulator.allocator = context.allocator
+	simulator.lanes = ekhos_thread.open_lane_group(threadCount, simulator.allocator)
+	simulator.threads = make([]^thread.Thread, max(threadCount - 1, 0), simulator.allocator)
+	return
+}
 
-plan_cpu_simulation :: proc(simulator: ^cpuSimulator, settings: ^SimulationSettings) -> (ok := true) { return }
+destroy_cpu_simulator :: proc(simulator: ^cpuSimulator) {
+	if len(simulator.lanes) == 0 do return
+	simulator.stop = true
+	ekhos_thread.laneSync(&simulator.lanes[0])
+	ekhos_thread.laneSync(&simulator.lanes[0])
+	for worker in simulator.threads do thread.destroy(worker)
+	ekhos_thread.close_lane_group(len(simulator.lanes), simulator.allocator, simulator.lanes)
+	delete(simulator.threads, simulator.allocator)
+	delete(simulator.lanes, simulator.allocator)
+	simulator^ = {}
+}
+
+plan_cpu_simulation :: proc(simulator: ^cpuSimulator, settings: ^SimulationSettings) -> (ok := true) {
+	info := simulator.info
+	threadCount := max(int(settings.cpuSettings.threadCount), 1)
+	if len(simulator.lanes) != threadCount {
+		destroy_cpu_simulator(simulator)
+		simulator^, ok = create_cpu_simulator(threadCount)
+		if !ok do return
+		for laneIndex in 1 ..< threadCount {
+			worker := new(CpuWorker, simulator.allocator)
+			worker.simulator = simulator
+			worker.lane = &simulator.lanes[laneIndex]
+			worker.allocator = simulator.allocator
+			simulator.threads[laneIndex - 1] = thread.create_and_start_with_data(worker, cpu_worker_proc)
+		}
+	}
+	simulator.info = info
+	return
+}
+
+cpu_worker_proc :: proc(data: rawptr) {
+	worker := cast(^CpuWorker)data
+	utility.prof_thread_init()
+	defer utility.prof_thread_deinit()
+	defer free(worker, worker.allocator)
+	simulator := worker.simulator
+	for {
+		ekhos_thread.laneSync(worker.lane)
+		if simulator.stop {
+			ekhos_thread.laneSync(worker.lane)
+			return
+		}
+		simulate_cpu_lane(simulator, worker.lane)
+		ekhos_thread.laneSync(worker.lane)
+	}
+}
+
+simulate_cpu :: proc(
+	simulator: ^cpuSimulator,
+	settings: SimulationSettings,
+	transmissions: []Transmission,
+	receiveChannels: []ReceiveChannel,
+	elements: #soa[]RectangularElement,
+	scatters: []Scatter,
+	impulses: []TransducerImpulse,
+	excitations: []Excitation,
+) -> (
+	data: []f32,
+	ok := true,
+) {
+	jobSettings := settings
+	simulator.job = {
+		settings        = &jobSettings,
+		transmissions   = transmissions,
+		receiveChannels = receiveChannels,
+		elements        = elements,
+		scatters        = scatters,
+		impulses        = impulses,
+		excitations     = excitations,
+	}
+	ekhos_thread.laneSync(&simulator.lanes[0])
+	data, ok = simulate_cpu_lane(simulator, &simulator.lanes[0])
+	ekhos_thread.laneSync(&simulator.lanes[0])
+	return
+}
 
 SCATTER_BATCH_SIZE :: 256
 DATALINE_BATCH_SIZE :: 1024
@@ -58,7 +163,8 @@ cpu_stage_timing_add :: proc(total: ^time.Duration, stopwatch: ^time.Stopwatch) 
 log_cpu_timing :: proc(timing: CpuTiming, label: string, loc := #caller_location) {
 	when CPU_STAGE_TIMING {
 		log.infof("%s planning stage: %v", label, timing.planning, location = loc)
-		log.infof(`
+		log.infof(
+			`
 %s CPU stage timing table:
 stage                         total                 percent
 allocation                    %16v                %.1f%%
@@ -69,38 +175,42 @@ convolution                   %16v                %.1f%%
 temporal response             %16v                %.1f%%
 total                         %16v                100.0%%`,
 			label,
-			timing.stages.allocation, timing.simulation > 0 ? 100 * f64(timing.stages.allocation) / f64(timing.simulation) : 0,
-			timing.stages.elementResponses, timing.simulation > 0 ? 100 * f64(timing.stages.elementResponses) / f64(timing.simulation) : 0,
-			timing.stages.transmitCoalesce, timing.simulation > 0 ? 100 * f64(timing.stages.transmitCoalesce) / f64(timing.simulation) : 0,
-			timing.stages.receiveCoalesce, timing.simulation > 0 ? 100 * f64(timing.stages.receiveCoalesce) / f64(timing.simulation) : 0,
-			timing.stages.convolution, timing.simulation > 0 ? 100 * f64(timing.stages.convolution) / f64(timing.simulation) : 0,
-			timing.stages.temporal, timing.simulation > 0 ? 100 * f64(timing.stages.temporal) / f64(timing.simulation) : 0,
+			timing.stages.allocation,
+			timing.simulation > 0 ? 100 * f64(timing.stages.allocation) / f64(timing.simulation) : 0,
+			timing.stages.elementResponses,
+			timing.simulation > 0 ? 100 * f64(timing.stages.elementResponses) / f64(timing.simulation) : 0,
+			timing.stages.transmitCoalesce,
+			timing.simulation > 0 ? 100 * f64(timing.stages.transmitCoalesce) / f64(timing.simulation) : 0,
+			timing.stages.receiveCoalesce,
+			timing.simulation > 0 ? 100 * f64(timing.stages.receiveCoalesce) / f64(timing.simulation) : 0,
+			timing.stages.convolution,
+			timing.simulation > 0 ? 100 * f64(timing.stages.convolution) / f64(timing.simulation) : 0,
+			timing.stages.temporal,
+			timing.simulation > 0 ? 100 * f64(timing.stages.temporal) / f64(timing.simulation) : 0,
 			timing.simulation,
 			location = loc,
 		)
 	}
 }
 
-simulate_cpu :: proc(
-	simulator: ^cpuSimulator,
-	settings: SimulationSettings,
-	transmissions: []Transmission,
-	receiveChannels: []ReceiveChannel,
-	elements: #soa[]RectangularElement,
-	scatters: []Scatter,
-	impulses: []TransducerImpulse,
-	excitations: []Excitation,
-) -> (
-	data: []f32,
-	ok := true,
-) {
+simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) -> (data: []f32, ok := true) {
+
+	if ekhos_thread.laneIdx(lane) != 0 {
+		return
+	}
+
 	utility.prof_scoped(#procedure)
 	totalStopwatch: time.Stopwatch
 	time.stopwatch_start(&totalStopwatch)
 	timing: CpuStageTiming
 
-	// TODO: Add multi-core support
-
+	settings := simulator.job.settings^
+	transmissions := simulator.job.transmissions
+	receiveChannels := simulator.job.receiveChannels
+	elements := simulator.job.elements
+	scatters := simulator.job.scatters
+	impulses := simulator.job.impulses
+	excitations := simulator.job.excitations
 	cumulative: bool = auto_cast settings.cumulative
 	samplingFrequency := settings.samplingFrequency
 	startTime := settings.startTime
@@ -130,6 +240,7 @@ simulate_cpu :: proc(
 	time.stopwatch_start(&stageStopwatch)
 	utility.prof_begin("Allocate")
 	data = make_aligned([]f32, sampleCount * receiveChannelCount * transmissionCount, 16)
+	simulator.job.data = data
 	elementImpulses := make([]ImpulseResponse, int(min(batchSize, scatterCount)) * len(elements), context.allocator)
 	transmissionSampleRanges := make([]SampleRange, int(min(batchSize, scatterCount)) * int(batchTxCount), context.allocator)
 	transmissionImpulses := make_aligned([]f32, int(min(batchSize, scatterCount)) * int(batchTxCount) * int(sampleCount), 16, context.allocator)
@@ -156,8 +267,6 @@ simulate_cpu :: proc(
 	when CPU_STAGE_TIMING {
 		cpu_stage_timing_add(&timing.allocation, &stageStopwatch)
 	}
-
-	// TODO: Choose where to put the scatter scaling
 
 	for scatterBatchStart: i32 = 0; scatterBatchStart < scatterCount; scatterBatchStart += batchSize {
 		scatterBatchEnd := min(scatterBatchStart + batchSize, scatterCount)
@@ -557,7 +666,7 @@ convolve_frequency_domain :: proc(
 				pffftSession, exists := setupCache^[fftCount]
 				if !exists {
 					pffftSession = pffft.new_setup(fftCount, .REAL)
-				assert(pffftSession != nil)
+					assert(pffftSession != nil)
 					map_insert(setupCache, fftCount, pffftSession)
 				}
 

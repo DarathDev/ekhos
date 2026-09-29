@@ -129,7 +129,7 @@ simulate :: proc(
 
 	switch &sim in simulator {
 	case cpuSimulator:
-		assert(settings.cpuSettings.threadCount == 1, "CPU multi-threading is not implemented yet; set CpuSettings.ThreadCount to 1")
+		assert(settings.cpuSettings.threadCount > 0, "CpuSettings.ThreadCount must be positive")
 	case vkSimulator:
 		assert(settings.gpuSettings.backend == .Vulkan, "Only the Vulkan GPU backend is implemented")
 	}
@@ -189,7 +189,7 @@ plan_simulation :: proc(
 	}
 	switch &sim in simulator {
 	case cpuSimulator:
-		assert(settings.cpuSettings.threadCount == 1, "CPU multi-threading is not implemented yet; set CpuSettings.ThreadCount to 1")
+		assert(settings.cpuSettings.threadCount > 0, "CpuSettings.ThreadCount must be positive")
 	case vkSimulator:
 		assert(settings.gpuSettings.backend == .Vulkan, "Only the Vulkan GPU backend is implemented")
 	}
