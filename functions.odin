@@ -428,8 +428,10 @@ build_cpp_compile_command :: proc(compilerKind: CompilerKind, parameters: CppCom
 		if compilerKind == .MSVC {
 			append(&cppOptions, CppOption{flag = "Zi"})
 			pdbFilename := assume(os.join_filename(parameters.symbolsName, "pdb", context.temp_allocator))
-			pdbPath := assume(os.join_path({parameters.outputPath, pdbFilename}, context.temp_allocator))
+			outputDirectory, _ := os.split_path(parameters.outputPath)
+			pdbPath := assume(os.join_path({outputDirectory, pdbFilename}, context.temp_allocator))
 			append(&cppOptions, CppOption{flag = "Fd", value = pdbPath})
+			append(&cppOptions, CppOption{flag = "FS"})
 		} else {
 			append(&cppOptions, CppOption{flag = "g"})
 		}
