@@ -15,13 +15,13 @@ import "import:pffft"
 assert :: utility.assert
 
 cpuSimulator :: struct {
-	info:    cpuSimulationInfo,
-	timing:  CpuTiming,
+	info:      cpuSimulationInfo,
+	timing:    CpuTiming,
 	allocator: mem.Allocator,
-	lanes:   []ekhos_thread.Lane,
-	threads: []^thread.Thread,
-	job:     CpuSimulationJob,
-	stop:    bool,
+	lanes:     []ekhos_thread.Lane,
+	threads:   []^thread.Thread,
+	job:       CpuSimulationJob,
+	stop:      bool,
 }
 
 CpuSimulationJob :: struct {
@@ -202,7 +202,6 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 	utility.prof_scoped(#procedure)
 	totalStopwatch: time.Stopwatch
 	time.stopwatch_start(&totalStopwatch)
-	timing: CpuStageTiming
 
 	settings := simulator.job.settings^
 	transmissions := simulator.job.transmissions
@@ -232,11 +231,12 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 	time.stopwatch_start(&progressStopwatch)
 	lastProgressLogTime: time.Duration
 
-	batchTxCount: i32 = 1
-	maxBatchRxCount := min(receiveChannelCount, DATALINE_BATCH_SIZE)
+	batchTxCount := min(transmissionCount, DATALINE_BATCH_SIZE)
+	batchRxCount := min(receiveChannelCount, DATALINE_BATCH_SIZE)
 	batchSize := simulator.info.scattererBatchSize > 0 ? i32(simulator.info.scattererBatchSize) : SCATTER_BATCH_SIZE
 
 	stageStopwatch: time.Stopwatch
+	timing: CpuStageTiming
 	time.stopwatch_start(&stageStopwatch)
 	utility.prof_begin("Allocate")
 	data = make_aligned([]f32, sampleCount * receiveChannelCount * transmissionCount, 16)
@@ -244,20 +244,19 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 	elementImpulses := make([]ImpulseResponse, int(min(batchSize, scatterCount)) * len(elements), context.allocator)
 	transmissionSampleRanges := make([]SampleRange, int(min(batchSize, scatterCount)) * int(batchTxCount), context.allocator)
 	transmissionImpulses := make_aligned([]f32, int(min(batchSize, scatterCount)) * int(batchTxCount) * int(sampleCount), 16, context.allocator)
-	scatterBatchMemory := assert(
-		mem.alloc_bytes_non_zeroed(
-			scatter_batch_memory_size(sampleCount, batchTxCount, maxBatchRxCount, scatterCount, batchSize),
-			align_of(u8),
-			context.allocator,
-		),
-	)
-	scatterArena: mem.Arena
-	mem.arena_init(&scatterArena, scatterBatchMemory)
-	scatterAllocator := mem.arena_allocator(&scatterArena)
+	receiveChannelSampleRanges := make([]SampleRange, int(min(batchSize, scatterCount)) * int(batchRxCount), context.allocator)
+	receiveChannelImpulses := make_aligned([]f32, int(min(batchSize, scatterCount)) * int(batchRxCount) * int(sampleCount), 16, context.allocator)
+	batchScatters := make([]CpuScatterData, int(min(batchSize, scatterCount)), context.allocator)
+	timeDomainScatters := make([dynamic]CpuScatterData, 0, int(min(batchSize, scatterCount)), context.allocator)
+	frequencyDomainScatters := make([dynamic]CpuScatterData, 0, int(min(batchSize, scatterCount)), context.allocator)
 	defer delete(elementImpulses)
 	defer delete(transmissionSampleRanges)
 	defer delete(transmissionImpulses)
-	defer delete(scatterBatchMemory)
+	defer delete(receiveChannelSampleRanges)
+	defer delete(receiveChannelImpulses)
+	defer delete(batchScatters)
+	defer delete(timeDomainScatters)
+	defer delete(frequencyDomainScatters)
 	pffftSetupCache := make(map[int]pffft.PffftSession, context.allocator)
 	defer {
 		for _, session in pffftSetupCache do pffft.destroy_setup(session)
@@ -283,175 +282,110 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 		utility.prof_end()
 		when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.elementResponses, &stageStopwatch)
 
-		for transmission, transmissionIndex in transmissions {
+		for txBatchStart: i32 = 0; txBatchStart < transmissionCount; txBatchStart += DATALINE_BATCH_SIZE {
+			txBatchEnd := min(txBatchStart + DATALINE_BATCH_SIZE, transmissionCount)
+			txBatchCount := txBatchEnd - txBatchStart
+
+			// Coalesce Transmissions
+			utility.prof_begin("Coalesce Transmissions")
 			when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
-			utility.prof_begin("Transmission Impulse Calculation")
-			for _, scatterIndex in scatters[scatterBatchStart:scatterBatchEnd] {
-				scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
-
-				transmissionSampleRange: SampleRange = {max(i32), min(i32)}
-				for element in transmission.elements {
-					elementImpulse := scatterElementImpulses[element.index]
-					elementImpulse.rect += element.delay * samplingFrequency
-					elementImpulse.scale *= element.apodization
-					if elementImpulse.scale == 0 do continue
-
-					transmissionSampleRange.minSample = min(transmissionSampleRange.minSample, i32(linalg.floor(elementImpulse.rect.x - 0.5)))
-					transmissionSampleRange.maxSample = max(transmissionSampleRange.maxSample, i32(linalg.ceil(elementImpulse.rect.w + 0.5)))
-				}
-
-				transmissionSampleRanges[scatterIndex] = transmissionSampleRange
-				transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
-				transmissionImpulse := transmissionImpulses[scatterIndex * int(sampleCount):][:transmissionSampleCount]
-				slice.zero(transmissionImpulse)
-
-				for element in transmission.elements {
-					elementImpulse := scatterElementImpulses[element.index]
-					elementImpulse.rect += element.delay * samplingFrequency
-					elementImpulse.scale *= element.apodization
-
-					if elementImpulse.scale == 0 do continue
-
-					elementMinSample := i32(linalg.floor(elementImpulse.rect.x - 0.5))
-					elementMaxSample := i32(linalg.ceil(elementImpulse.rect.w + 0.5))
-
-					sample_aperture_add(
-						transmissionImpulse[(elementMinSample - transmissionSampleRange.minSample):(elementMaxSample + 1 - transmissionSampleRange.minSample)],
-						elementMinSample,
-						elementImpulse,
-						auto_cast cumulative,
-					)
-				}
-			}
-			utility.prof_end()
+			coalesce_impulses(
+				transmissions[txBatchStart:txBatchEnd],
+				scatters[scatterBatchStart:scatterBatchEnd],
+				elements,
+				elementImpulses,
+				transmissionSampleRanges,
+				transmissionImpulses,
+				sampleCount,
+				batchTxCount,
+				samplingFrequency,
+				0,
+				cumulative,
+				false,
+			)
 			when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.transmitCoalesce, &stageStopwatch)
+			utility.prof_end()
 
 			for rxBatchStart: i32 = 0; rxBatchStart < receiveChannelCount; rxBatchStart += DATALINE_BATCH_SIZE {
 				rxBatchEnd := min(rxBatchStart + DATALINE_BATCH_SIZE, receiveChannelCount)
-				batchRxCount := rxBatchEnd - rxBatchStart
+				rxBatchCount := rxBatchEnd - rxBatchStart
 
-				timeDomainScatters := make([dynamic]CpuScatterData, 0, scatterBatchCount, scatterAllocator)
-				frequencyDomainScatters := make([dynamic]CpuScatterData, 0, scatterBatchCount, scatterAllocator)
-
+				utility.prof_begin("Coalesce Receive Channels")
 				when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
-				for scatter, scatterIndex in scatters[scatterBatchStart:scatterBatchEnd] {
-					scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
-
-					utility.prof_scoped("Scatterer Impulse")
-
-					receiveChannelSampleRangesMemory := assert(
-						mem.arena_alloc_non_zeroed(&scatterArena, int(batchRxCount) * size_of(SampleRange), align_of(SampleRange)),
-					)
-					receiveChannelImpulsesMemory := assert(mem.arena_alloc_non_zeroed(&scatterArena, int(batchRxCount) * int(sampleCount) * size_of(f32), 16))
-					scatterData: CpuScatterData = {
-						scatter                    = scatter,
-						transmissionSampleRanges   = transmissionSampleRanges[scatterIndex * int(batchTxCount):(scatterIndex + 1) * int(batchTxCount)],
-						receiveChannelSampleRanges = slice.from_ptr(cast(^SampleRange)receiveChannelSampleRangesMemory, int(batchRxCount)),
-						transmissionImpulses       = transmissionImpulses[scatterIndex * int(
-							batchTxCount,
-						) * int(sampleCount):(scatterIndex + 1) * int(batchTxCount) * int(sampleCount)],
-						receiveChannelImpulses     = slice.from_ptr(cast(^f32)receiveChannelImpulsesMemory, int(batchRxCount) * int(sampleCount)),
-					}
-
-					utility.prof_begin("Receive Channel Impulse")
-					for rxIndex in rxBatchStart ..< rxBatchEnd {
-						receiveChannel := receiveChannels[rxIndex]
-						localRxIndex := rxIndex - rxBatchStart
-
-						utility.prof_begin("Receive Channel Precalculations")
-						receiveChannelSampleRange: SampleRange = {max(i32), min(i32)}
-						for element in receiveChannel.elements {
-							elementImpulse := scatterElementImpulses[element.index]
-							elementImpulse.rect += element.delay * samplingFrequency
-							elementImpulse.scale *= element.apodization
-							// One of the impulse responses needs to be offset by the start time
-							elementImpulse.rect -= startTime * samplingFrequency
-							// Necessary for proper delaying in the cumulative case
-							if cumulative do elementImpulse.rect -= 1
-							if elementImpulse.scale == 0 do continue
-
-							receiveChannelSampleRange.minSample = min(receiveChannelSampleRange.minSample, i32(linalg.floor(elementImpulse.rect.x - 0.5)))
-							receiveChannelSampleRange.maxSample = max(receiveChannelSampleRange.maxSample, i32(linalg.ceil(elementImpulse.rect.w + 0.5)))
-						}
-
-						scatterData.receiveChannelSampleRanges[localRxIndex] = receiveChannelSampleRange
-						receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
-						receiveChannelImpulse := scatterData.receiveChannelImpulses[localRxIndex * auto_cast sampleCount:][:receiveChannelSampleCount]
-						slice.zero(receiveChannelImpulse)
-						utility.prof_end()
-
-						utility.prof_begin("Receive Channel Sampling")
-						for element in receiveChannel.elements {
-							elementImpulse := scatterElementImpulses[element.index]
-							elementImpulse.rect += element.delay * samplingFrequency
-							elementImpulse.scale *= element.apodization
-							// One of the impulse responses needs to be offset by the start time
-							elementImpulse.rect -= startTime * samplingFrequency
-							// Necessary for proper delaying in the cumulative case
-							if cumulative do elementImpulse.rect -= 1
-
-							if elementImpulse.scale == 0 do continue
-
-							elementMinSample := i32(linalg.floor(elementImpulse.rect.x - 0.5))
-							elementMaxSample := i32(linalg.ceil(elementImpulse.rect.w + 0.5))
-
-							sample_aperture_add(
-								receiveChannelImpulse[(elementMinSample - receiveChannelSampleRange.minSample):(elementMaxSample +
-									1 -
-									receiveChannelSampleRange.minSample)],
-								elementMinSample,
-								elementImpulse,
-								auto_cast cumulative,
-							)
-						}
-						utility.prof_end()
-					}
-					utility.prof_end()
-
-					maxTransmissionSampleCount, maxReceiveChannelSampleCount: i32
-					for transmissionSampleRange in scatterData.transmissionSampleRanges {
-						maxTransmissionSampleCount = max(maxTransmissionSampleCount, sample_range_sample_count(transmissionSampleRange))
-					}
-					for receiveChannelSampleRange in scatterData.receiveChannelSampleRanges {
-						maxReceiveChannelSampleCount = max(maxReceiveChannelSampleCount, sample_range_sample_count(receiveChannelSampleRange))
-					}
-					fftCount := pffft.adjust_n(auto_cast (maxTransmissionSampleCount + maxReceiveChannelSampleCount - 1))
-					scatterData.fftCount = auto_cast fftCount
-
-					if fftCount < CPU_TIME_DOMAIN_THRESHOLD {
-						append(&timeDomainScatters, scatterData)
-					} else {
-						append(&frequencyDomainScatters, scatterData)
-					}
-				}
+				coalesce_impulses(
+					receiveChannels[rxBatchStart:rxBatchEnd],
+					scatters[scatterBatchStart:scatterBatchEnd],
+					elements,
+					elementImpulses,
+					receiveChannelSampleRanges,
+					receiveChannelImpulses,
+					sampleCount,
+					batchRxCount,
+					samplingFrequency,
+					startTime,
+					cumulative,
+					true,
+				)
 				when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.receiveCoalesce, &stageStopwatch)
+				utility.prof_end()
 
-				if len(timeDomainScatters) > 0 {
-					when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
-					convolve_time_domain(
-						sampleCount,
-						batchTxCount,
-						batchRxCount,
-						timeDomainScatters[:],
-						data[(rxBatchStart + auto_cast transmissionIndex * receiveChannelCount) * sampleCount:],
-					)
-					when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.convolution, &stageStopwatch)
+				for scatterIndex in scatterBatchStart ..< scatterBatchEnd {
+					localScatterIndex := scatterIndex - scatterBatchStart
+					batchScatters[localScatterIndex] = {
+						scatter                    = scatters[scatterIndex],
+						transmissionSampleRanges   = transmissionSampleRanges[int(
+							localScatterIndex,
+						) * int(batchTxCount):int(localScatterIndex + 1) * int(batchTxCount)],
+						receiveChannelSampleRanges = receiveChannelSampleRanges[int(localScatterIndex) * int(batchRxCount):][:int(batchRxCount)],
+						transmissionImpulses       = transmissionImpulses[int(
+							localScatterIndex,
+						) * int(batchTxCount) * int(sampleCount):][:int(sampleCount) * int(batchTxCount)],
+						receiveChannelImpulses     = receiveChannelImpulses[int(
+							localScatterIndex,
+						) * int(batchRxCount) * int(sampleCount):][:int(batchRxCount) * int(sampleCount)],
+					}
 				}
-				if len(frequencyDomainScatters) > 0 {
-					when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
-					convolve_frequency_domain(
-						sampleCount,
-						batchTxCount,
-						batchRxCount,
-						frequencyDomainScatters[:],
-						&pffftSetupCache,
-						data[(rxBatchStart + auto_cast transmissionIndex * receiveChannelCount) * sampleCount:],
-					)
-					when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.convolution, &stageStopwatch)
-				}
-				mem.arena_free_all(&scatterArena)
 
-				completedDatalineScatters += i64(scatterBatchCount) * i64(batchTxCount) * i64(batchRxCount)
+				for dataLineIndex: i32 = 0; dataLineIndex < txBatchCount * rxBatchCount; dataLineIndex += 1 {
+					transmissionIndex := dataLineIndex / rxBatchCount
+					receiveChannelIndex := dataLineIndex % rxBatchCount
+					clear(&timeDomainScatters)
+					clear(&frequencyDomainScatters)
+					for batchScatter in batchScatters[:scatterBatchCount] {
+						transmissionSampleRange := batchScatter.transmissionSampleRanges[transmissionIndex]
+						receiveChannelSampleRange := batchScatter.receiveChannelSampleRanges[receiveChannelIndex]
+						transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
+						receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
+						fftCount := pffft.adjust_n(auto_cast (transmissionSampleCount + receiveChannelSampleCount - 1))
+						scatterData := batchScatter
+						scatterData.transmissionSampleRanges = batchScatter.transmissionSampleRanges[transmissionIndex:transmissionIndex + 1]
+						scatterData.transmissionImpulses = batchScatter.transmissionImpulses[transmissionIndex *
+						sampleCount:(transmissionIndex + 1) *
+						sampleCount]
+						scatterData.receiveChannelSampleRanges = batchScatter.receiveChannelSampleRanges[receiveChannelIndex:receiveChannelIndex + 1]
+						scatterData.receiveChannelImpulses = batchScatter.receiveChannelImpulses[receiveChannelIndex *
+						sampleCount:(receiveChannelIndex + 1) *
+						sampleCount]
+						scatterData.fftCount = auto_cast fftCount
+						if fftCount < CPU_TIME_DOMAIN_THRESHOLD {
+							append(&timeDomainScatters, scatterData)
+						} else {
+							append(&frequencyDomainScatters, scatterData)
+						}
+					}
+					dataLine := data[(rxBatchStart + receiveChannelIndex + (txBatchStart + transmissionIndex) * receiveChannelCount) * sampleCount:]
+					if len(timeDomainScatters) > 0 {
+						when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
+						convolve_time_domain(sampleCount, timeDomainScatters[:], dataLine)
+						when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.convolution, &stageStopwatch)
+					}
+					if len(frequencyDomainScatters) > 0 {
+						when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
+						convolve_frequency_domain(sampleCount, frequencyDomainScatters[:], &pffftSetupCache, dataLine)
+						when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.convolution, &stageStopwatch)
+					}
+				}
+				completedDatalineScatters += i64(scatterBatchCount) * i64(txBatchEnd - txBatchStart) * i64(batchRxCount)
 				elapsedDuration := time.stopwatch_duration(progressStopwatch)
 				if elapsedDuration >= PROGRESS_LOG_DELAY_THRESHOLD {
 					if lastProgressLogTime == 0 || elapsedDuration - lastProgressLogTime >= PROGRESS_LOG_INTERVAL {
@@ -485,6 +419,209 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 		simulator.timing.simulation = time.stopwatch_duration(totalStopwatch)
 	}
 	return
+}
+
+CpuScatterData :: struct {
+	scatter:                    Scatter,
+	transmissionSampleRanges:   []SampleRange,
+	receiveChannelSampleRanges: []SampleRange,
+	transmissionImpulses:       []f32,
+	receiveChannelImpulses:     []f32,
+	fftCount:                   i32,
+}
+
+coalesce_impulses :: proc(
+	elementSets: []$ElementSet,
+	batchScatters: []$ScatterData,
+	elements: #soa[]RectangularElement,
+	elementImpulses: []ImpulseResponse,
+	sampleRanges: []SampleRange,
+	impulses: []f32,
+	sampleCount: i32,
+	batchElementSetCount: i32,
+	samplingFrequency, startTime: f32,
+	cumulative: bool,
+	$applyCumulativeOffset: bool,
+) {
+	for elementSet, elementSetIndex in elementSets {
+		utility.prof_begin("Element Set Impulse")
+		for _, scatterIndex in batchScatters {
+			scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
+			utility.prof_scoped("Scatterer Impulse")
+			utility.prof_begin("Precalculations")
+			elementSetSampleRange: SampleRange = {max(i32), min(i32)}
+			for element in elementSet.elements {
+				elementImpulse := scatterElementImpulses[element.index]
+				elementImpulse.rect += element.delay * samplingFrequency
+
+				elementImpulse.scale *= element.apodization
+				elementImpulse.rect -= startTime * samplingFrequency
+				if applyCumulativeOffset && cumulative do elementImpulse.rect -= 1
+				if elementImpulse.scale == 0 do continue
+				elementSetSampleRange.minSample = min(elementSetSampleRange.minSample, i32(linalg.floor(elementImpulse.rect.x - 0.5)))
+				elementSetSampleRange.maxSample = max(elementSetSampleRange.maxSample, i32(linalg.ceil(elementImpulse.rect.w + 0.5)))
+			}
+			sampleRanges[scatterIndex * int(batchElementSetCount) + elementSetIndex] = elementSetSampleRange
+			elementSetSampleCount := sample_range_sample_count(elementSetSampleRange)
+			elementSetImpulse := impulses[(scatterIndex * int(batchElementSetCount) + elementSetIndex) * int(sampleCount):][:elementSetSampleCount]
+			slice.zero(elementSetImpulse)
+			utility.prof_end()
+			utility.prof_begin("Sampling")
+			for element in elementSet.elements {
+				elementImpulse := scatterElementImpulses[element.index]
+				elementImpulse.rect += element.delay * samplingFrequency
+				elementImpulse.scale *= element.apodization
+				elementImpulse.rect -= startTime * samplingFrequency
+				if applyCumulativeOffset && cumulative do elementImpulse.rect -= 1
+				if elementImpulse.scale == 0 do continue
+				elementMinSample := i32(linalg.floor(elementImpulse.rect.x - 0.5))
+				elementMaxSample := i32(linalg.ceil(elementImpulse.rect.w + 0.5))
+				sample_aperture_add(
+					elementSetImpulse[(elementMinSample - elementSetSampleRange.minSample):(elementMaxSample + 1 - elementSetSampleRange.minSample)],
+					elementMinSample,
+					elementImpulse,
+					auto_cast cumulative,
+				)
+			}
+			utility.prof_end()
+		}
+		utility.prof_end()
+	}
+}
+
+convolve_time_domain :: proc(sampleCount: i32, scatters: []CpuScatterData, data: []f32) {
+	utility.prof_scoped(#procedure)
+	#no_bounds_check receiveDataLine := data[:sampleCount]
+
+	utility.prof_begin("Check Sample Range")
+	minSample := auto_cast sampleCount
+	maxSample: i32 = 0
+	for scatterIndex: i32 = 0; scatterIndex < auto_cast len(scatters); scatterIndex += 1 {
+		scatterData := scatters[scatterIndex]
+		transmissionSampleRange := scatterData.transmissionSampleRanges[0]
+		transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
+		transmissionMinSample := transmissionSampleRange.minSample
+		receiveChannelSampleRange := scatterData.receiveChannelSampleRanges[0]
+		receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
+		receiveChannelMinSample := receiveChannelSampleRange.minSample
+		minSample = min(minSample, max(transmissionMinSample + receiveChannelMinSample, 0))
+		maxSample = max(
+			maxSample,
+			min(transmissionMinSample + transmissionSampleCount + receiveChannelMinSample + receiveChannelSampleCount - 1, auto_cast sampleCount),
+		)
+	}
+	utility.prof_end()
+	if minSample >= maxSample do return
+
+	for baseSample := minSample; baseSample < maxSample; baseSample += SIMD32_WIDTH {
+		samples := baseSample + simd.iota(SIMD_I32)
+		sampleMask := simd.lanes_lt(samples, SIMD_I32(maxSample))
+		sum := SIMD_F32(0)
+
+		for scatterIndex: i32 = 0; scatterIndex < auto_cast len(scatters); scatterIndex += 1 {
+			scatterData := scatters[scatterIndex]
+			transmissionSampleRange := scatterData.transmissionSampleRanges[0]
+			transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
+			receiveChannelSampleRange := scatterData.receiveChannelSampleRanges[0]
+			receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
+			scatterMinSample := max(transmissionSampleRange.minSample + receiveChannelSampleRange.minSample, 0)
+			scatterMaxSample := min(
+				transmissionSampleRange.minSample + transmissionSampleCount + receiveChannelSampleRange.minSample + receiveChannelSampleCount - 1,
+				auto_cast sampleCount,
+			)
+			scatterMask := simd.bit_and(
+				sampleMask,
+				simd.bit_and(simd.lanes_ge(samples, SIMD_I32(scatterMinSample)), simd.lanes_lt(samples, SIMD_I32(scatterMaxSample))),
+			)
+			if scatterMinSample >= scatterMaxSample do continue
+
+			transmissionImpulse := scatterData.transmissionImpulses[:transmissionSampleCount]
+			receiveChannelImpulse := scatterData.receiveChannelImpulses[:receiveChannelSampleCount]
+			transmissionMaxSample := transmissionSampleRange.minSample + transmissionSampleCount - 1
+			receiveChannelMaxSample := receiveChannelSampleRange.minSample + receiveChannelSampleCount - 1
+			minK := max(transmissionSampleRange.minSample, baseSample - receiveChannelMaxSample)
+			maxK := min(transmissionMaxSample, min(baseSample + SIMD32_WIDTH, scatterMaxSample) - receiveChannelSampleRange.minSample)
+			if minK > maxK do continue
+
+			scatterSum := SIMD_F32(0)
+			for k in minK ..= maxK {
+				kt := k - transmissionSampleRange.minSample
+				#no_bounds_check tSamples := SIMD_F32(transmissionImpulse[kt])
+				kr := samples - k - receiveChannelSampleRange.minSample
+				kr0 := baseSample - k - receiveChannelSampleRange.minSample
+				krMask := simd.bit_and(simd.lanes_ge(kr, 0), simd.lanes_lt(kr, SIMD_I32(receiveChannelSampleCount)))
+				#no_bounds_check rSamples := simd.masked_load(cast(^SIMD_F32)raw_data(receiveChannelImpulse[kr0:]), SIMD_F32(0), krMask)
+				scatterSum += tSamples * rSamples
+			}
+			sum += simd.select(SIMD_U32(scatterMask), scatterSum, SIMD_F32(0))
+		}
+
+		#no_bounds_check dataPtr := cast(^SIMD_F32)raw_data(receiveDataLine[baseSample:])
+		d := simd.masked_load(dataPtr, SIMD_F32(0), sampleMask)
+		d += sum
+		simd.masked_store(dataPtr, d, sampleMask)
+	}
+}
+
+convolve_frequency_domain :: proc(sampleCount: i32, scatters: []CpuScatterData, setupCache: ^map[int]pffft.PffftSession, data: []f32) {
+	utility.prof_scoped(#procedure)
+
+	maxFftCount: i32
+	for scatterData in scatters {
+		maxFftCount = max(maxFftCount, scatterData.fftCount)
+	}
+
+	transmissionFourier := make_aligned([]f32, maxFftCount, 16, context.allocator)
+	receiveChannelFourier := make_aligned([]f32, maxFftCount, 16, context.allocator)
+	convolutionData := make_aligned([]f32, maxFftCount, 16, context.allocator)
+	defer {
+		delete(transmissionFourier)
+		delete(receiveChannelFourier)
+		delete(convolutionData)
+	}
+
+	#no_bounds_check receiveDataLine := data[:sampleCount]
+	for scatterData in scatters {
+		utility.prof_scoped("Scatterer")
+		transmissionSampleRange := scatterData.transmissionSampleRanges[0]
+		transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
+		receiveChannelSampleRange := scatterData.receiveChannelSampleRanges[0]
+		receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
+		minSample := max(transmissionSampleRange.minSample + receiveChannelSampleRange.minSample, 0)
+		maxSample := min(transmissionSampleRange.maxSample + receiveChannelSampleRange.maxSample + 1, sampleCount)
+		if minSample >= maxSample do continue
+
+		fftCount := pffft.adjust_n(auto_cast (transmissionSampleCount + receiveChannelSampleCount - 1))
+		pffftSession, exists := setupCache^[fftCount]
+		if !exists {
+			pffftSession = pffft.new_setup(fftCount, .REAL)
+			assert(pffftSession != nil)
+			map_insert(setupCache, fftCount, pffftSession)
+		}
+
+		transmissionImpulse := scatterData.transmissionImpulses[:transmissionSampleCount]
+		receiveChannelImpulse := scatterData.receiveChannelImpulses[:receiveChannelSampleCount]
+		copy(transmissionFourier[:transmissionSampleCount], transmissionImpulse)
+		copy(receiveChannelFourier[:receiveChannelSampleCount], receiveChannelImpulse)
+		slice.zero(transmissionFourier[transmissionSampleCount:fftCount])
+		slice.zero(receiveChannelFourier[receiveChannelSampleCount:fftCount])
+		pffft.transform(pffftSession, raw_data(transmissionFourier), raw_data(transmissionFourier), raw_data(convolutionData), .FORWARD)
+		pffft.transform(pffftSession, raw_data(receiveChannelFourier), raw_data(receiveChannelFourier), raw_data(convolutionData), .FORWARD)
+
+		slice.zero(convolutionData[:fftCount])
+		pffft.zconvolve_accumulate(
+			pffftSession,
+			raw_data(transmissionFourier),
+			raw_data(receiveChannelFourier),
+			raw_data(convolutionData),
+			1.0 / f32(fftCount),
+		)
+		pffft.transform(pffftSession, raw_data(convolutionData), raw_data(convolutionData), raw_data(transmissionFourier), .BACKWARD)
+		startSample := transmissionSampleRange.minSample + receiveChannelSampleRange.minSample
+		for sample := minSample; sample < maxSample; sample += 1 {
+			receiveDataLine[sample] += convolutionData[sample - startSample]
+		}
+	}
 }
 
 apply_temporal_responses :: proc(
@@ -542,185 +679,6 @@ convolve_temporal_response :: proc(current, next: []f32, response: $T, sampleInt
 		for inputIndex in firstInput ..< outputIndex + 1 {
 			next[outputIndex] += current[inputIndex] * response[outputIndex - inputIndex] * sampleInterval
 		}
-	}
-}
-
-convolve_time_domain :: proc(sampleCount, transmissionCount, receiveChannelCount: i32, scatters: []CpuScatterData, data: []f32) {
-	utility.prof_scoped(#procedure)
-	for transmissionIndex in 0 ..< transmissionCount {
-		utility.prof_scoped("Transmission")
-		for receiveChannelIndex in 0 ..< receiveChannelCount {
-			utility.prof_scoped("Receive Channel")
-			#no_bounds_check receiveDataLine := data[(receiveChannelIndex + (transmissionIndex * receiveChannelCount)) * auto_cast sampleCount:][:sampleCount]
-
-			utility.prof_begin("Check Sample Range")
-			minSample := auto_cast sampleCount
-			maxSample: i32 = 0
-			for scatterIndex: i32 = 0; scatterIndex < auto_cast len(scatters); scatterIndex += 1 {
-				scatterData := scatters[scatterIndex]
-				transmissionSampleRange := scatterData.transmissionSampleRanges[transmissionIndex]
-				transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
-				transmissionMinSample := transmissionSampleRange.minSample
-				receiveChannelSampleRange := scatterData.receiveChannelSampleRanges[receiveChannelIndex]
-				receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
-				receiveChannelMinSample := receiveChannelSampleRange.minSample
-				minSample = min(minSample, max(transmissionMinSample + receiveChannelMinSample, 0))
-				maxSample = max(
-					maxSample,
-					min(transmissionMinSample + transmissionSampleCount + receiveChannelMinSample + receiveChannelSampleCount - 1, auto_cast sampleCount),
-				)
-			}
-			utility.prof_end()
-			if minSample >= maxSample do continue
-
-			for baseSample := minSample; baseSample < maxSample; baseSample += SIMD32_WIDTH {
-				samples := baseSample + simd.iota(SIMD_I32)
-				sampleMask := simd.lanes_lt(samples, SIMD_I32(maxSample))
-				sum := SIMD_F32(0)
-
-				for scatterIndex: i32 = 0; scatterIndex < auto_cast len(scatters); scatterIndex += 1 {
-					scatterData := scatters[scatterIndex]
-					transmissionSampleRange := scatterData.transmissionSampleRanges[transmissionIndex]
-					transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
-					receiveChannelSampleRange := scatterData.receiveChannelSampleRanges[receiveChannelIndex]
-					receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
-					scatterMinSample := max(transmissionSampleRange.minSample + receiveChannelSampleRange.minSample, 0)
-					scatterMaxSample := min(
-						transmissionSampleRange.minSample + transmissionSampleCount + receiveChannelSampleRange.minSample + receiveChannelSampleCount - 1,
-						auto_cast sampleCount,
-					)
-					scatterMask := simd.bit_and(
-						sampleMask,
-						simd.bit_and(simd.lanes_ge(samples, SIMD_I32(scatterMinSample)), simd.lanes_lt(samples, SIMD_I32(scatterMaxSample))),
-					)
-					if scatterMinSample >= scatterMaxSample do continue
-
-					transmissionImpulse := scatterData.transmissionImpulses[transmissionIndex * auto_cast sampleCount:][:transmissionSampleCount]
-					receiveChannelImpulse := scatterData.receiveChannelImpulses[receiveChannelIndex * auto_cast sampleCount:][:receiveChannelSampleCount]
-					transmissionMaxSample := transmissionSampleRange.minSample + transmissionSampleCount - 1
-					receiveChannelMaxSample := receiveChannelSampleRange.minSample + receiveChannelSampleCount - 1
-					minK := max(transmissionSampleRange.minSample, baseSample - receiveChannelMaxSample)
-					maxK := min(transmissionMaxSample, min(baseSample + SIMD32_WIDTH, scatterMaxSample) - receiveChannelSampleRange.minSample)
-					if minK > maxK do continue
-
-					scatterSum := SIMD_F32(0)
-					for k in minK ..= maxK {
-						kt := k - transmissionSampleRange.minSample
-						#no_bounds_check tSamples := SIMD_F32(transmissionImpulse[kt])
-						kr := samples - k - receiveChannelSampleRange.minSample
-						kr0 := baseSample - k - receiveChannelSampleRange.minSample
-						krMask := simd.bit_and(simd.lanes_ge(kr, 0), simd.lanes_lt(kr, SIMD_I32(receiveChannelSampleCount)))
-						#no_bounds_check rSamples := simd.masked_load(cast(^SIMD_F32)raw_data(receiveChannelImpulse[kr0:]), SIMD_F32(0), krMask)
-						scatterSum += tSamples * rSamples
-					}
-					sum += simd.select(SIMD_U32(scatterMask), scatterSum, SIMD_F32(0))
-				}
-
-				#no_bounds_check dataPtr := cast(^SIMD_F32)raw_data(receiveDataLine[baseSample:])
-				d := simd.masked_load(dataPtr, SIMD_F32(0), sampleMask)
-				d += sum
-				simd.masked_store(dataPtr, d, sampleMask)
-			}
-		}
-	}
-}
-
-convolve_frequency_domain :: proc(
-	sampleCount, transmissionCount, receiveChannelCount: i32,
-	scatters: []CpuScatterData,
-	setupCache: ^map[int]pffft.PffftSession,
-	data: []f32,
-) {
-	utility.prof_scoped(#procedure)
-
-	maxFftCount: i32
-	for scatterData in scatters {
-		maxFftCount = max(maxFftCount, scatterData.fftCount)
-	}
-
-	transmissionFourier := make_aligned([]f32, maxFftCount, 16, context.allocator)
-	receiveChannelFourier := make_aligned([]f32, maxFftCount, 16, context.allocator)
-	convolutionData := make_aligned([]f32, maxFftCount, 16, context.allocator)
-	defer {
-		delete(transmissionFourier)
-		delete(receiveChannelFourier)
-		delete(convolutionData)
-	}
-
-	for transmissionIndex in 0 ..< transmissionCount {
-		utility.prof_scoped("Transmission")
-		for receiveChannelIndex in 0 ..< receiveChannelCount {
-			utility.prof_scoped("Receive Channel")
-			#no_bounds_check receiveDataLine := data[(receiveChannelIndex + (transmissionIndex * receiveChannelCount)) * auto_cast sampleCount:][:sampleCount]
-			for scatterData in scatters {
-				utility.prof_scoped("Scatterer")
-				transmissionSampleRange := scatterData.transmissionSampleRanges[transmissionIndex]
-				transmissionSampleCount := sample_range_sample_count(transmissionSampleRange)
-				receiveChannelSampleRange := scatterData.receiveChannelSampleRanges[receiveChannelIndex]
-				receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRange)
-				minSample := max(transmissionSampleRange.minSample + receiveChannelSampleRange.minSample, 0)
-				maxSample := min(transmissionSampleRange.maxSample + receiveChannelSampleRange.maxSample + 1, sampleCount)
-				if minSample >= maxSample do continue
-
-				fftCount := pffft.adjust_n(auto_cast (transmissionSampleCount + receiveChannelSampleCount - 1))
-				pffftSession, exists := setupCache^[fftCount]
-				if !exists {
-					pffftSession = pffft.new_setup(fftCount, .REAL)
-					assert(pffftSession != nil)
-					map_insert(setupCache, fftCount, pffftSession)
-				}
-
-				transmissionImpulse := scatterData.transmissionImpulses[transmissionIndex * sampleCount:][:transmissionSampleCount]
-				receiveChannelImpulse := scatterData.receiveChannelImpulses[receiveChannelIndex * sampleCount:][:receiveChannelSampleCount]
-				copy(transmissionFourier[:transmissionSampleCount], transmissionImpulse)
-				copy(receiveChannelFourier[:receiveChannelSampleCount], receiveChannelImpulse)
-				slice.zero(transmissionFourier[transmissionSampleCount:fftCount])
-				slice.zero(receiveChannelFourier[receiveChannelSampleCount:fftCount])
-				pffft.transform(pffftSession, raw_data(transmissionFourier), raw_data(transmissionFourier), raw_data(convolutionData), .FORWARD)
-				pffft.transform(pffftSession, raw_data(receiveChannelFourier), raw_data(receiveChannelFourier), raw_data(convolutionData), .FORWARD)
-
-				slice.zero(convolutionData[:fftCount])
-				pffft.zconvolve_accumulate(
-					pffftSession,
-					raw_data(transmissionFourier),
-					raw_data(receiveChannelFourier),
-					raw_data(convolutionData),
-					1.0 / f32(fftCount),
-				)
-				pffft.transform(pffftSession, raw_data(convolutionData), raw_data(convolutionData), raw_data(transmissionFourier), .BACKWARD)
-				startSample := transmissionSampleRange.minSample + receiveChannelSampleRange.minSample
-				for sample := minSample; sample < maxSample; sample += 1 {
-					receiveDataLine[sample] += convolutionData[sample - startSample]
-				}
-			}
-		}
-	}
-}
-
-CpuScatterData :: struct {
-	scatter:                    Scatter,
-	transmissionSampleRanges:   []SampleRange,
-	receiveChannelSampleRanges: []SampleRange,
-	transmissionImpulses:       []f32,
-	receiveChannelImpulses:     []f32,
-	fftCount:                   i32,
-}
-
-scatter_batch_memory_size :: proc(
-	sampleCount, transmissionCount, receiveChannelCount, scatterCount: i32,
-	scattererBatchSize: i32 = SCATTER_BATCH_SIZE,
-) -> int {
-	batchSize := int(min(scattererBatchSize, scatterCount))
-	maxRx := int(min(DATALINE_BATCH_SIZE, receiveChannelCount))
-	receiveChannelMetadataSize := maxRx * size_of(SampleRange)
-	receiveChannelImpulseSize := maxRx * int(sampleCount) * size_of(f32)
-
-	scatterDataSize := arena_allocation_size(receiveChannelMetadataSize, align_of(SampleRange)) + arena_allocation_size(receiveChannelImpulseSize, 16)
-	batchCollectionSize := 2 * arena_allocation_size(batchSize * size_of(CpuScatterData), align_of(CpuScatterData))
-	return batchCollectionSize + batchSize * scatterDataSize
-
-	arena_allocation_size :: proc(byteCount, alignment: int) -> int {
-		return byteCount + alignment - 1
 	}
 }
 
