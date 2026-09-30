@@ -20,6 +20,7 @@ linearSideLengths = [128];
 matrixSideLengths = [32];
 matrixReceiveGroupSizes = 1;
 scatterCounts = 2.^(7:18);
+scatterDepthRange = [20e-3, 100e-3];
 transmissionCounts = [1];
 repetitions = 1;
 minimumCorrelation = 0.98;
@@ -27,7 +28,11 @@ minimumCorrelation = 0.98;
 runCPU = true;
 runGPU = true;
 writeResults = true;
-quickMode = logical(str2double("0"));
+quickMode = false;
+quickModeOverride = getenv("EKHOS_QUICK_MODE");
+if ~isempty(quickModeOverride)
+    quickMode = logical(str2double(quickModeOverride));
+end
 rng(0, "twister");
 hardware = getHardwareInfo();
 
@@ -39,6 +44,72 @@ if quickMode
     transmissionCounts = 1;
 end
 
+scatterCountOverride = str2num(getenv("EKHOS_SCATTER_COUNTS")); %#ok<ST2NM>
+if ~isempty(scatterCountOverride)
+    scatterCounts = scatterCountOverride;
+end
+matrixSizeOverride = str2num(getenv("EKHOS_MATRIX_SIZES")); %#ok<ST2NM>
+if ~isempty(matrixSizeOverride)
+    matrixSideLengths = matrixSizeOverride;
+end
+linearSizeOverride = str2num(getenv("EKHOS_LINEAR_SIZES")); %#ok<ST2NM>
+if ~isempty(linearSizeOverride) || ~isempty(getenv("EKHOS_LINEAR_SIZES"))
+    linearSideLengths = linearSizeOverride;
+end
+scatterDepthOverride = str2num(getenv("EKHOS_SCATTER_DEPTH_MM")); %#ok<ST2NM>
+if numel(scatterDepthOverride) == 2 && scatterDepthOverride(2) > scatterDepthOverride(1)
+    scatterDepthRange = scatterDepthOverride * 1e-3;
+end
+runCPUOverride = getenv("EKHOS_RUN_CPU");
+if ~isempty(runCPUOverride)
+    runCPU = logical(str2double(runCPUOverride));
+end
+runGPUOverride = getenv("EKHOS_RUN_GPU");
+if ~isempty(runGPUOverride)
+    runGPU = logical(str2double(runGPUOverride));
+end
+writeResultsOverride = getenv("EKHOS_WRITE_RESULTS");
+if ~isempty(writeResultsOverride)
+    writeResults = logical(str2double(writeResultsOverride));
+end
+replotResultsPath = getenv("EKHOS_REPLOT_RESULTS");
+if ~isempty(replotResultsPath)
+    loadedResults = load(replotResultsPath, "results", "hardware");
+    outputDirectory = fullfile(repositoryDirectory, "figures");
+    if ~isfolder(outputDirectory)
+        mkdir(outputDirectory);
+    end
+    timestamp = string(datetime("now", "Format", "yyyyMMdd-HHmmss"));
+    saveBenchmarkFigures(loadedResults.results, loadedResults.hardware, outputDirectory, timestamp);
+    fprintf("Replotted benchmark results from %s\n", replotResultsPath);
+    return;
+end
+reportOutputStats = false;
+reportOutputStatsOverride = getenv("EKHOS_REPORT_OUTPUT_STATS");
+if ~isempty(reportOutputStatsOverride)
+    reportOutputStats = logical(str2double(reportOutputStatsOverride));
+end
+failOnCorrelation = true;
+failOnCorrelationOverride = getenv("EKHOS_FAIL_ON_CORRELATION");
+if ~isempty(failOnCorrelationOverride)
+    failOnCorrelation = logical(str2double(failOnCorrelationOverride));
+end
+fieldIICacheEnabled = true;
+fieldIICacheOverride = getenv("EKHOS_FIELDII_CACHE");
+if ~isempty(fieldIICacheOverride)
+    fieldIICacheEnabled = logical(str2double(fieldIICacheOverride));
+end
+skipFieldII = false;
+skipFieldIIOverride = getenv("EKHOS_SKIP_FIELDII");
+if ~isempty(skipFieldIIOverride)
+    skipFieldII = logical(str2double(skipFieldIIOverride));
+end
+fieldIICachePath = getenv("EKHOS_FIELDII_CACHE_PATH");
+if isempty(fieldIICachePath)
+    fieldIICachePath = fullfile(repositoryDirectory, "figures", "fieldII-reference-cache.mat");
+end
+fieldIICache = loadFieldIICache(fieldIICachePath, fieldIICacheEnabled);
+
 impulseResponse = GetImpulseResponse(fc, fs);
 excitation = sin(2 * pi * (0:1 / double(fs):cycleCount / double(fc)) * double(fc));
 
@@ -47,6 +118,13 @@ fieldII.field_init(-1);
 fieldII.set_field('c', double(c));
 fieldII.set_field('fs', double(fs));
 
+% Prepare every Field II case before starting any Ekhos simulations. Each
+% prepared record contains all inputs needed to reproduce the comparison.
+preparedCases = struct("key", {}, "arrayKind", {}, "rowCount", {}, ...
+    "columnCount", {}, "elementCount", {}, "scatterCount", {}, ...
+    "transmissionCount", {}, "scatterPositions", {}, "scatterAmplitudes", {}, ...
+    "fieldIIData", {}, "fieldIITimingData", {}, "fieldIITime", {}, "fieldIIChannelCount", {}, ...
+    "fieldIIStartTimes", {}, "transmitGeometry", {}, "receiveGeometry", {});
 for arrayKind = ["linear", "matrix"]
     if strcmp(arrayKind, "linear")
         arraySizes = linearSideLengths;
@@ -55,86 +133,191 @@ for arrayKind = ["linear", "matrix"]
     end
 
     for arraySize = arraySizes
-        rowCount = arraySize;
-        columnCount = arraySize;
-        elementCount = rowCount * columnCount;
         if arrayKind == "linear"
+            rowCount = arraySize;
+            columnCount = arraySize;
+            elementCount = rowCount * columnCount;
             receiveGroupSizes = rowCount;
         else
+            rowCount = arraySize;
+            columnCount = arraySize;
+            elementCount = rowCount * columnCount;
             receiveGroupSizes = matrixReceiveGroupSizes;
         end
 
-        allScatterPositions = makeScatterPositions(max(scatterCounts));
+        rng(0, "twister");
+        if skipFieldII && arrayKind == "matrix"
+            makeScatterPositions(max(scatterCounts), scatterDepthRange);
+        end
+        allScatterPositions = makeScatterPositions(max(scatterCounts), scatterDepthRange);
         allScatterAmplitudes = ones(max(scatterCounts), 1, "single");
 
         for scatterCount = scatterCounts
             scatterPositions = allScatterPositions(:, 1:scatterCount);
             scatterAmplitudes = allScatterAmplitudes(1:scatterCount);
-            for receiveGroupSize = receiveGroupSizes
-                if mod(elementCount, receiveGroupSize) ~= 0
-                    continue;
+            for transmissionCount = transmissionCounts
+                fieldIICacheKey = makeFieldIICacheKey(...
+                    arrayKind, rowCount, columnCount, scatterCount, max(scatterCounts), scatterDepthRange, ...
+                    transmissionCount, fs, c, fc, cycleCount);
+                cacheIndex = find(string({fieldIICache.key}) == string(fieldIICacheKey), 1, "last");
+                if isempty(cacheIndex)
+                    legacyFieldIICacheKey = makeLegacyFieldIICacheKey(...
+                        arrayKind, rowCount, columnCount, scatterCount, scatterDepthRange, ...
+                        transmissionCount, fs, c, fc, cycleCount);
+                    cacheIndex = find(string({fieldIICache.key}) == string(legacyFieldIICacheKey), 1, "last");
                 end
-                receiveChannelCount = elementCount / receiveGroupSize;
-                for transmissionCount = transmissionCounts
-                    fprintf("%s elements=%d group=%d scatters=%d transmissions=%d\n", ...
-                        arrayKind, elementCount, receiveGroupSize, scatterCount, transmissionCount);
-
-                    for repetitionIndex = 1:repetitions
-                        [fieldIIData, fieldIITime, fieldIIChannelCount, fieldIIStartTimes, transmitGeometry, receiveGeometry] = runFieldII(...
-                            arrayKind, rowCount, columnCount, scatterPositions, scatterAmplitudes, ...
-                            transmissionCount, impulseResponse, excitation);
-                        if arrayKind == "linear"
-                            fieldIIGrouped = fieldIIData;
-                        else
-                            fieldIIGrouped = groupSignals(fieldIIData, receiveGroupSize);
-                        end
-                        assert(size(fieldIIGrouped, 2) == receiveChannelCount, ...
-                            "Field II grouping produced an unexpected channel count.");
-
-                        simulatorTypes = [ekhos.SimulatorType.CPU, ekhos.SimulatorType.GPU];
-                        simulatorTypes = simulatorTypes([runCPU, runGPU]);
-                        for simulatorType = simulatorTypes
-                            simulation = makeVkSimulation(...
-                                transmitGeometry, receiveGeometry, scatterPositions, scatterAmplitudes, ...
-                                receiveGroupSize, transmissionCount, simulatorType, fs, c, impulseResponse, excitation);
-                            timer = tic();
-                            vkData = simulation.call();
-                            wallTime = toc(timer);
-                            vkData = double(vkData);
-                            if ismatrix(vkData)
-                                vkData = reshape(vkData, size(vkData, 1), size(vkData, 2), 1);
-                            end
-                            vkData = vkData * (1 / double(fs));
-                            fieldIIDataScaled = fieldIIGrouped * (1 / double(fs));
-                            outputCorrelation = compareSimulationOutputs(...
-                                fieldIIDataScaled, fieldIIStartTimes, vkData, ...
-                                simulation.StartTime, fs);
-                            assert(outputCorrelation >= minimumCorrelation, ...
-                                "Field II and %s outputs have correlation %.4f, below the %.2f threshold.", ...
-                                string(simulatorType), outputCorrelation, minimumCorrelation);
-
-                            row = table(string(arrayKind), string(simulatorType), elementCount, ...
-                                receiveGroupSize, receiveChannelCount, scatterCount, transmissionCount, ...
-                                fieldIIChannelCount, fieldIITime, wallTime, simulation.Metrics.SimulationTime, ...
-                                outputCorrelation, ...
-                                size(fieldIIGrouped, 1), size(vkData, 1), repetitionIndex, ...
-                                "VariableNames", {"arrayKind", "simulator", "elementCount", ...
-                                "receiveGroupSize", "receiveChannelCount", "scatterCount", ...
-                                "transmissionCount", "fieldIIChannelCount", "fieldIISeconds", ...
-                                "wallSeconds", "simulationSeconds", "outputCorrelation", "fieldIISampleCount", ...
-                                "vkSampleCount", "repetition"});
-                            results = [results; row]; %#ok<AGROW>
-
-                            fprintf("  repetition=%d %s FieldII=%.4fs wall=%.4fs simulation=%.4fs speedup=%.2fx\n", ...
-                                repetitionIndex, string(simulatorType), fieldIITime, wallTime, ...
-                                double(simulation.Metrics.SimulationTime), fieldIITime / wallTime);
-                        end
+                cacheHasScatterInputs = ~isempty(cacheIndex) && ...
+                    ~isempty(fieldIICache(cacheIndex).scatterPositions) && ...
+                    ~isempty(fieldIICache(cacheIndex).scatterAmplitudes);
+                if skipFieldII && (~cacheHasScatterInputs)
+                    error("EKHOS_SKIP_FIELDII=1 requires a cached Field II reference for %s.", fieldIICacheKey);
+                end
+                if fieldIICacheEnabled && cacheHasScatterInputs
+                    cachedReference = fieldIICache(cacheIndex);
+                    fieldIIData = cachedReference.data;
+                    fieldIITimingData = cachedReference.timingData;
+                    fieldIITime = cachedReference.elapsed;
+                    fieldIIChannelCount = cachedReference.channelCount;
+                    fieldIIStartTimes = cachedReference.startTimes;
+                    transmitGeometry = cachedReference.transmitGeometry;
+                    receiveGeometry = cachedReference.receiveGeometry;
+                    if ~isempty(cachedReference.scatterPositions)
+                        scatterPositions = cachedReference.scatterPositions;
+                        scatterAmplitudes = cachedReference.scatterAmplitudes;
+                    end
+                    fprintf("Field II cache hit: %s\n", fieldIICacheKey);
+                else
+                    fprintf("Field II simulation: %s\n", fieldIICacheKey);
+                    [fieldIIData, fieldIITimingData, fieldIITime, fieldIIChannelCount, fieldIIStartTimes, transmitGeometry, receiveGeometry] = runFieldII(...
+                        arrayKind, rowCount, columnCount, scatterPositions, scatterAmplitudes, ...
+                        transmissionCount, impulseResponse, excitation);
+                    if fieldIICacheEnabled
+                        fieldIICache(end + 1) = makeFieldIICacheEntry(...
+                            fieldIICacheKey, fieldIIData, fieldIITimingData, fieldIITime, fieldIIChannelCount, fieldIIStartTimes, ...
+                            transmitGeometry, receiveGeometry, scatterPositions, scatterAmplitudes);
+                        saveFieldIICache(fieldIICachePath, fieldIICache);
                     end
                 end
+                preparedCases(end + 1) = makePreparedCase(...
+                    fieldIICacheKey, arrayKind, rowCount, columnCount, elementCount, scatterCount, transmissionCount, ...
+                    scatterPositions, scatterAmplitudes, fieldIIData, fieldIITimingData, fieldIITime, fieldIIChannelCount, ...
+                    fieldIIStartTimes, transmitGeometry, receiveGeometry); %#ok<AGROW>
             end
         end
     end
 end
+
+fieldII.field_end();
+ekhos.LoadLibraries();
+fprintf("Field II preparation complete for %d cases; starting Ekhos phase\n", numel(preparedCases));
+    for preparedCase = preparedCases
+        arrayKind = preparedCase.arrayKind;
+        elementCount = preparedCase.elementCount;
+        if arrayKind == "linear"
+            receiveGroupSizes = preparedCase.rowCount;
+        else
+            receiveGroupSizes = matrixReceiveGroupSizes;
+        end
+        for receiveGroupSize = receiveGroupSizes
+            if mod(elementCount, receiveGroupSize) ~= 0
+                continue;
+            end
+            receiveChannelCount = elementCount / receiveGroupSize;
+            if arrayKind == "linear"
+                receiveIndices = makeReceiveIndices(preparedCase.receiveGeometry, receiveGroupSize);
+                fieldIIGrouped = groupSignals( ...
+                    preparedCase.fieldIIData(:, receiveIndices, :), receiveGroupSize);
+            else
+                fieldIIGrouped = groupSignals(preparedCase.fieldIIData, receiveGroupSize);
+            end
+            assert(size(fieldIIGrouped, 2) == receiveChannelCount, ...
+                "Field II grouping produced %d channels for %s group %d; expected %d.", ...
+                size(fieldIIGrouped, 2), arrayKind, receiveGroupSize, receiveChannelCount);
+            if arrayKind == "linear"
+                fieldIITimingGrouped = preparedCase.fieldIITimingData;
+            else
+                fieldIITimingGrouped = fieldIIGrouped;
+            end
+            phases = struct("label", {}, "simulatorType", {}, "threadCount", {}, "cpuScatterFraction", {});
+            if runCPU
+                phases(end + 1) = struct("label", "Ekhos CPU", ...
+                    "simulatorType", ekhos.SimulatorType.CPU, "threadCount", uint16(1), "cpuScatterFraction", single(0));
+                phases(end + 1) = struct("label", "Ekhos CPU (all cores)", ...
+                    "simulatorType", ekhos.SimulatorType.CPU, "threadCount", uint16(0), "cpuScatterFraction", single(0));
+            end
+            if runGPU
+                phases(end + 1) = struct("label", "Ekhos GPU", ...
+                    "simulatorType", ekhos.SimulatorType.GPU, "threadCount", uint16(1), "cpuScatterFraction", single(0));
+            end
+            if runCPU && runGPU
+                phases(end + 1) = struct("label", "Ekhos Hybrid", ...
+                    "simulatorType", ekhos.SimulatorType.Hybrid, "threadCount", uint16(0), "cpuScatterFraction", single(NaN));
+            end
+            fprintf("%s elements=%d group=%d scatters=%d transmissions=%d\n", ...
+                arrayKind, elementCount, receiveGroupSize, preparedCase.scatterCount, preparedCase.transmissionCount);
+            phaseResults = struct("label", {}, "wallTime", {});
+            for repetitionIndex = 1:repetitions
+                for phaseIndex = 1:numel(phases)
+                    phase = phases(phaseIndex);
+                    cpuScatterFraction = phase.cpuScatterFraction;
+                    if phase.simulatorType == ekhos.SimulatorType.Hybrid
+                        phaseLabels = [phaseResults.label];
+                        cpuTime = phaseResults(phaseLabels == "Ekhos CPU (all cores)").wallTime;
+                        gpuTime = phaseResults(phaseLabels == "Ekhos GPU").wallTime;
+                        cpuScatterFraction = single(gpuTime / (cpuTime + gpuTime));
+                        fprintf("  Hybrid CPU scatter fraction=%.4f (CPU=%.4fs GPU=%.4fs)\n", ...
+                            cpuScatterFraction, cpuTime, gpuTime);
+                    end
+                    simulation = makeVkSimulation(...
+                        preparedCase.transmitGeometry, preparedCase.receiveGeometry, preparedCase.scatterPositions, preparedCase.scatterAmplitudes, ...
+                        receiveGroupSize, preparedCase.transmissionCount, phase.simulatorType, phase.threadCount, cpuScatterFraction, ...
+                        fs, c, impulseResponse, excitation);
+                    fprintf("  %s simulation started\n", phase.label);
+                    timer = tic();
+                    vkData = simulation.call();
+                    wallTime = toc(timer);
+                    fprintf("  %s simulation complete in %.4fs\n", phase.label, wallTime);
+                    phaseResults(phaseIndex) = struct("label", phase.label, "wallTime", wallTime);
+                    vkData = double(vkData);
+                    if ismatrix(vkData)
+                        vkData = reshape(vkData, size(vkData, 1), size(vkData, 2), 1);
+                    end
+                    vkData = vkData * (1 / double(fs));
+                    if reportOutputStats && phase.simulatorType == ekhos.SimulatorType.GPU
+                        fprintf("  GPU output min=%g max=%g norm=%g nonzero=%d\n", ...
+                            min(vkData, [], "all"), max(vkData, [], "all"), norm(vkData(:)), nnz(vkData));
+                    end
+                    fieldIIDataScaled = fieldIIGrouped * (1 / double(fs));
+                    outputCorrelation = compareSimulationOutputs(...
+                        fieldIIDataScaled, preparedCase.fieldIIStartTimes, vkData, simulation.StartTime, fs);
+                    fprintf("  %s correlation=%.4f (required %.2f)\n", phase.label, outputCorrelation, minimumCorrelation);
+                    if arrayKind == "linear"
+                        linearCorrelation = compareSimulationOutputs(...
+                            fieldIITimingGrouped * (1 / double(fs)), ...
+                            preparedCase.fieldIIStartTimes, vkData, simulation.StartTime, fs);
+                        fprintf("  %s linear-array correlation=%.4f\n", phase.label, linearCorrelation);
+                    end
+                    if failOnCorrelation
+                        assert(outputCorrelation >= minimumCorrelation, ...
+                            "Field II and %s outputs have correlation %.4f, below the %.2f threshold.", ...
+                            phase.label, outputCorrelation, minimumCorrelation);
+                    end
+                    row = table(string(arrayKind), string(phase.label), elementCount, ...
+                        receiveGroupSize, receiveChannelCount, preparedCase.scatterCount, preparedCase.transmissionCount, ...
+                        preparedCase.fieldIIChannelCount, preparedCase.fieldIITime, wallTime, simulation.Metrics.SimulationTime, ...
+                        outputCorrelation, size(fieldIIGrouped, 1), size(vkData, 1), repetitionIndex, ...
+                        'VariableNames', {'arrayKind', 'simulator', 'elementCount', 'receiveGroupSize', 'receiveChannelCount', ...
+                        'scatterCount', 'transmissionCount', 'fieldIIChannelCount', 'fieldIISeconds', 'wallSeconds', ...
+                        'simulationSeconds', 'outputCorrelation', 'fieldIISampleCount', 'vkSampleCount', 'repetition'});
+                    row.cpuScatterFraction = double(cpuScatterFraction);
+                    results = [results; row]; %#ok<AGROW>
+                    fprintf("  repetition=%d %s FieldII=%.4fs wall=%.4fs simulation=%.4fs speedup=%.2fx\n", ...
+                        repetitionIndex, phase.label, preparedCase.fieldIITime, wallTime, ...
+                        double(simulation.Metrics.SimulationTime), preparedCase.fieldIITime / wallTime);
+                end
+            end
+        end
+    end
 
 if writeResults
     outputDirectory = fullfile(repositoryDirectory, "figures");
@@ -148,33 +331,129 @@ if writeResults
 end
 
 %% Local functions
-function positions = makeScatterPositions(scatterCount)
+function positions = makeScatterPositions(scatterCount, depthRange)
 positions = [
     rand(1, scatterCount, "single") * 16e-3 - 8e-3;
     rand(1, scatterCount, "single") * 4e-3 - 2e-3;
-    rand(1, scatterCount, "single") * 80e-3 + 20e-3;
+    rand(1, scatterCount, "single") * (depthRange(2) - depthRange(1)) + depthRange(1);
     ];
 end
 
-function [data, elapsed, channelCount, startTimes, transmitGeometry, receiveGeometry] = runFieldII(...
+function key = makeFieldIICacheKey(...
+    arrayKind, rowCount, columnCount, scatterCount, maximumScatterCount, scatterDepthRange, ...
+    transmissionCount, samplingFrequency, speedOfSound, centerFrequency, cycleCount)
+key = sprintf("v5-%s-%d-%d-%d-%d-%.9g-%.9g-%d-%.9g-%.9g-%.9g-%d", ...
+    arrayKind, rowCount, columnCount, scatterCount, maximumScatterCount, scatterDepthRange(1), ...
+    scatterDepthRange(2), transmissionCount, double(samplingFrequency), ...
+    double(speedOfSound), double(centerFrequency), cycleCount);
+end
+
+function key = makeLegacyFieldIICacheKey(...
+    arrayKind, rowCount, columnCount, scatterCount, scatterDepthRange, ...
+    transmissionCount, samplingFrequency, speedOfSound, centerFrequency, cycleCount)
+key = sprintf("%s-%d-%d-%d-%.9g-%.9g-%d-%.9g-%.9g-%.9g-%d", ...
+    arrayKind, rowCount, columnCount, scatterCount, scatterDepthRange(1), ...
+    scatterDepthRange(2), transmissionCount, double(samplingFrequency), ...
+    double(speedOfSound), double(centerFrequency), cycleCount);
+end
+
+function cache = loadFieldIICache(cachePath, enabled)
+cache = struct("key", {}, "data", {}, "timingData", {}, "elapsed", {}, "channelCount", {}, ...
+    "startTimes", {}, "transmitGeometry", {}, "receiveGeometry", {}, ...
+    "scatterPositions", {}, "scatterAmplitudes", {});
+if ~enabled || ~isfile(cachePath)
+    return;
+end
+try
+    loaded = load(cachePath, "fieldIICache");
+catch exception
+    warning("Ekhos:InvalidFieldIICache", ...
+        "Ignoring unreadable Field II cache %s: %s", cachePath, exception.message);
+    return;
+end
+if isfield(loaded, "fieldIICache")
+    cache = loaded.fieldIICache;
+    if ~isfield(cache, "timingData")
+        [cache.timingData] = deal([]);
+    end
+    if ~isfield(cache, "scatterPositions")
+        [cache.scatterPositions] = deal([]);
+    end
+    if ~isfield(cache, "scatterAmplitudes")
+        [cache.scatterAmplitudes] = deal([]);
+    end
+end
+end
+
+function entry = makeFieldIICacheEntry(key, data, timingData, elapsed, channelCount, startTimes, ...
+    transmitGeometry, receiveGeometry, scatterPositions, scatterAmplitudes)
+entry = struct( ...
+    "key", key, "data", data, "timingData", timingData, "elapsed", elapsed, "channelCount", channelCount, ...
+    "startTimes", startTimes, "transmitGeometry", transmitGeometry, ...
+    "receiveGeometry", receiveGeometry, "scatterPositions", scatterPositions, ...
+    "scatterAmplitudes", scatterAmplitudes);
+end
+
+function preparedCase = makePreparedCase(key, arrayKind, rowCount, columnCount, elementCount, ...
+    scatterCount, transmissionCount, scatterPositions, scatterAmplitudes, fieldIIData, fieldIITimingData, fieldIITime, ...
+    fieldIIChannelCount, fieldIIStartTimes, transmitGeometry, receiveGeometry)
+preparedCase = struct( ...
+    "key", key, "arrayKind", arrayKind, "rowCount", rowCount, "columnCount", columnCount, ...
+    "elementCount", elementCount, "scatterCount", scatterCount, "transmissionCount", transmissionCount, ...
+    "scatterPositions", scatterPositions, "scatterAmplitudes", scatterAmplitudes, ...
+    "fieldIIData", fieldIIData, "fieldIITimingData", fieldIITimingData, "fieldIITime", fieldIITime, "fieldIIChannelCount", fieldIIChannelCount, ...
+    "fieldIIStartTimes", fieldIIStartTimes, "transmitGeometry", transmitGeometry, ...
+    "receiveGeometry", receiveGeometry);
+end
+
+function saveFieldIICache(cachePath, cache)
+cacheDirectory = fileparts(cachePath);
+if ~isempty(cacheDirectory) && ~isfolder(cacheDirectory)
+    mkdir(cacheDirectory);
+end
+fieldIICache = cache; %#ok<NASGU>
+save(cachePath, "fieldIICache", "-v7.3");
+end
+
+function [data, timingData, elapsed, channelCount, startTimes, transmitGeometry, receiveGeometry] = runFieldII(...
     arrayKind, rowCount, columnCount, scatterPositions, scatterAmplitudes, ...
     transmissionCount, impulseResponse, excitation)
 if strcmp(arrayKind, "linear")
-    tAperture = fieldII.xdc_linear_array(columnCount, 2.2e-4, 2.2e-4 * rowCount, 3e-5, 1, rowCount, [0, 0, 1e10]);
-    rAperture = fieldII.xdc_linear_array(columnCount, 2.2e-4, 2.2e-4 * rowCount, 3e-5, 1, rowCount, [0, 0, 1e10]);
+    timingTAperture = fieldII.xdc_linear_array(columnCount, 2.2e-4, 2.2e-4 * rowCount, ...
+        3e-5, 1, rowCount, [0, 0, 1e10]);
+    timingRAperture = fieldII.xdc_linear_array(columnCount, 2.2e-4, 2.2e-4 * rowCount, ...
+        3e-5, 1, rowCount, [0, 0, 1e10]);
+    tAperture = fieldII.xdc_2d_array(columnCount, rowCount, 2.2e-4, 2.2e-4, ...
+        3e-5, 0, ones(rowCount, columnCount)', 1, 1, [0, 0, 1e10]);
+    rAperture = fieldII.xdc_2d_array(columnCount, rowCount, 2.2e-4, 2.2e-4, ...
+        3e-5, 0, ones(rowCount, columnCount)', 1, 1, [0, 0, 1e10]);
 else
+    timingTAperture = [];
+    timingRAperture = [];
     tAperture = fieldII.xdc_2d_array(columnCount, rowCount, 2.2e-4, 2.2e-4, ...
         3e-5, 3e-5, ones(rowCount, columnCount)', 1, 1, [0, 0, 1e10]);
     rAperture = fieldII.xdc_2d_array(columnCount, rowCount, 2.2e-4, 2.2e-4, ...
         3e-5, 3e-5, ones(rowCount, columnCount)', 1, 1, [0, 0, 1e10]);
 end
-cleanup = onCleanup(@() freeApertures(tAperture, rAperture));
+cleanup = onCleanup(@() freeApertures(tAperture, rAperture, timingTAperture, timingRAperture));
 fieldII.xdc_impulse(tAperture, double(impulseResponse));
 fieldII.xdc_impulse(rAperture, double(impulseResponse));
 fieldII.xdc_excitation(tAperture, double(excitation));
 if strcmp(arrayKind, "linear")
-    fieldII.xdc_apodization(tAperture, 0, ones(1, columnCount));
-    fieldII.xdc_apodization(rAperture, 0, ones(1, columnCount));
+    fieldII.xdc_impulse(timingTAperture, double(impulseResponse));
+    fieldII.xdc_impulse(timingRAperture, double(impulseResponse));
+    fieldII.xdc_excitation(timingTAperture, double(excitation));
+    fieldII.xdc_apodization(timingTAperture, 0, ones(1, columnCount));
+    fieldII.xdc_apodization(timingRAperture, 0, ones(1, columnCount));
+    elementNumbers = (1:columnCount).';
+    subelementApodizations = double(ones(columnCount, rowCount));
+    subelementDelays = zeros(columnCount, rowCount);
+    fieldII.ele_apodization(timingTAperture, elementNumbers, subelementApodizations);
+    fieldII.ele_apodization(timingRAperture, elementNumbers, subelementApodizations);
+    fieldII.ele_delay(timingTAperture, elementNumbers, subelementDelays);
+    fieldII.ele_delay(timingRAperture, elementNumbers, subelementDelays);
+    fieldII.xdc_apodization(tAperture, 0, ones(1, columnCount * rowCount));
+    fieldII.xdc_apodization(rAperture, 0, ones(1, columnCount * rowCount));
 else
     fieldII.xdc_apodization(tAperture, 0, reshape(ones(columnCount, rowCount)', 1, []));
     fieldII.xdc_apodization(rAperture, 0, reshape(ones(columnCount, rowCount)', 1, []));
@@ -183,18 +462,46 @@ end
     receiveGeometry = fieldII.xdc_get(rAperture, 'rect');
 
 fieldIIData = cell(transmissionCount, 1);
+fieldIITimingData = cell(transmissionCount, 1);
 startTimes = zeros(transmissionCount, 1);
-timer = tic();
+elapsed = 0;
 for transmissionIndex = 1:transmissionCount
+    if strcmp(arrayKind, "linear")
+        timer = tic();
+        [fieldIITimingData{transmissionIndex}, timingStartTime] = fieldII.calc_scat_multi(...
+            timingTAperture, timingRAperture, double(scatterPositions'), ...
+            double(scatterAmplitudes));
+        elapsed = elapsed + toc(timer);
+    end
+    if ~strcmp(arrayKind, "linear")
+        timer = tic();
+    end
     [fieldIIData{transmissionIndex}, startTimes(transmissionIndex)] = ...
     fieldII.calc_scat_multi(tAperture, rAperture, double(scatterPositions'), double(scatterAmplitudes));
+    if ~strcmp(arrayKind, "linear")
+        elapsed = elapsed + toc(timer);
+    end
+    if strcmp(arrayKind, "linear")
+        startTimes(transmissionIndex) = timingStartTime;
+    end
 end
-elapsed = toc(timer);
 channelCount = size(fieldIIData{1}, 2);
 maxSamples = max(cellfun(@(value) size(value, 1), fieldIIData));
 data = zeros(maxSamples, channelCount, transmissionCount);
+if strcmp(arrayKind, "linear")
+    timingChannelCount = size(fieldIITimingData{1}, 2);
+    timingMaxSamples = max(cellfun(@(value) size(value, 1), fieldIITimingData));
+    timingData = zeros(timingMaxSamples, timingChannelCount, transmissionCount);
+else
+    timingData = data;
+end
 for transmissionIndex = 1:transmissionCount
     data(1:size(fieldIIData{transmissionIndex}, 1), :, transmissionIndex) = fieldIIData{transmissionIndex};
+    if strcmp(arrayKind, "linear")
+        timingData(1:size(fieldIITimingData{transmissionIndex}, 1), :, transmissionIndex) = fieldIITimingData{transmissionIndex};
+    else
+        timingData = data;
+    end
 end
 end
 
@@ -225,11 +532,14 @@ end
 
 function simulation = makeVkSimulation(...
     transmitGeometry, receiveGeometry, scatterPositions, scatterAmplitudes, ...
-    receiveGroupSize, transmissionCount, simulatorType, fs, c, impulseResponse, excitation)
+    receiveGroupSize, transmissionCount, simulatorType, threadCount, cpuScatterFraction, ...
+    fs, c, impulseResponse, excitation)
 elementCount = size(transmitGeometry, 2);
 simulation = ekhos.Simulation();
 simulation.Cumulative = true;
 simulation.SimulatorType = simulatorType;
+simulation.CpuSettings.ThreadCount = threadCount;
+simulation.HybridSettings.CpuScatterFraction = cpuScatterFraction;
 simulation.SamplingFrequency = fs;
 simulation.SpeedOfSound = c;
 simulation.Impulses = {single(impulseResponse)};
@@ -302,9 +612,13 @@ grouped = reshape(sum(reshape(data, size(data, 1), groupSize, channelCount / gro
     size(data, 1), channelCount / groupSize, size(data, 3));
 end
 
-function freeApertures(transmitAperture, receiveAperture)
+function freeApertures(transmitAperture, receiveAperture, timingTransmitAperture, timingReceiveAperture)
 fieldII.xdc_free(transmitAperture);
 fieldII.xdc_free(receiveAperture);
+if ~isempty(timingTransmitAperture)
+    fieldII.xdc_free(timingTransmitAperture);
+    fieldII.xdc_free(timingReceiveAperture);
+end
 end
 
 function hardware = getHardwareInfo()
@@ -366,11 +680,11 @@ resultTransmissionCounts = results{:, 7};
 resultFieldIISeconds = results{:, 9};
 resultWallSeconds = results{:, 10};
 arrayKinds = unique(resultArrayKinds, "stable");
-seriesNames = ["Field II", "Ekhos CPU", "Ekhos GPU"];
-seriesSimulators = ["", "CPU", "GPU"];
-seriesLineWidths = [5, 3.75, 2.5];
+seriesNames = ["Field II", "Ekhos CPU", "Ekhos CPU (all cores)", "Ekhos GPU", "Ekhos Hybrid"];
+seriesSimulators = ["", seriesNames(2:end)];
+seriesLineWidths = [5, 3.75, 3.25, 2.75, 2.25];
     colorcetColors = colorcet('L16', 'N', 5);
-    seriesColors = colorcetColors(2:4, :);
+    seriesColors = colorcetColors(1:5, :);
 panelCount = 0;
 for arrayKind = arrayKinds'
     panelCount = panelCount + numel(unique(resultElementCounts(resultArrayKinds == arrayKind)));
@@ -411,8 +725,16 @@ for arrayKind = arrayKinds'
             if seriesIndex > 1
                 seriesMask = seriesMask & resultSimulators == seriesSimulators(seriesIndex);
             end
+            if ~any(seriesMask)
+                continue;
+            end
+            if seriesIndex == 1
+                measurements = resultFieldIISeconds;
+            else
+                measurements = resultWallSeconds;
+            end
             [values, ~] = summarizeMeasurements(...
-                resultScatterCounts, resultWallSeconds, seriesMask, scatterValues);
+                resultScatterCounts, measurements, seriesMask, scatterValues);
             plot(scatterValues, values, ":o", ...
                 "Color", seriesColors(seriesIndex, :), "LineWidth", seriesLineWidths(seriesIndex), ...
                 "MarkerFaceColor", seriesColors(seriesIndex, :), ...
@@ -427,7 +749,6 @@ for arrayKind = arrayKinds'
         grid on;
         xlabel("Scatter count");
         ylabel("Mean wall time (s)");
-        title(sprintf("%s", arrayKind));
         subtitleHandle = subtitle(sprintf("%d \\times %d elements", ...
             round(sqrt(elementCount)), round(sqrt(elementCount))));
         subtitleHandle.Color = [0.25, 0.25, 0.25];
@@ -436,9 +757,7 @@ for arrayKind = arrayKinds'
             legendHandle.TextColor = "k";
     end
 end
-annotation(timingFigure, "textbox", [0.02, 0.92, 0.96, 0.06], ...
-        "String", hardwareLabel, "Color", "k", "EdgeColor", "none", ...
-        "HorizontalAlignment", "center");
+sgtitle(timingFigure, hardwareLabel, "Color", "k", "FontSize", 10);
 saveas(timingFigure, fullfile(outputDirectory, "fieldII-Ekhos-benchmark-" + timestamp + "-timing.png"));
 saveas(timingFigure, fullfile(outputDirectory, "fieldII-Ekhos-benchmark-" + timestamp + "-timing.fig"));
 close(timingFigure);
@@ -458,7 +777,7 @@ for arrayKind = arrayKinds'
     axesHandle.XLabel.Color = "k";
     axesHandle.YLabel.Color = "k";
     axesHandle.GridColor = [0.7, 0.7, 0.7];
-        colororder(axesHandle, seriesColors(2:3, :));
+        colororder(axesHandle, seriesColors(2:end, :));
     hold on;
         if arrayKind == "linear"
             plotReceiveGroupSize = round(sqrt(elementCount));
@@ -470,8 +789,11 @@ for arrayKind = arrayKinds'
             resultReceiveGroupSizes == plotReceiveGroupSize & ...
             resultTransmissionCounts == plotTransmissionCount;
         scatterValues = unique(resultScatterCounts(baseMask));
-        for seriesIndex = 2:3
+        for seriesIndex = 2:numel(seriesNames)
             seriesMask = baseMask & resultSimulators == seriesSimulators(seriesIndex);
+            if ~any(seriesMask)
+                continue;
+            end
             [values, ~] = summarizeMeasurements(...
                 resultScatterCounts, resultFieldIISeconds ./ resultWallSeconds, ...
                 seriesMask, scatterValues);
@@ -489,7 +811,6 @@ for arrayKind = arrayKinds'
         grid on;
         xlabel("Scatter count");
         ylabel("Field II / Ekhos wall-time ratio");
-        title(sprintf("%s", arrayKind));
         subtitleHandle = subtitle(sprintf("%d \\times %d elements", ...
             round(sqrt(elementCount)), round(sqrt(elementCount))));
         subtitleHandle.Color = [0.25, 0.25, 0.25];
@@ -498,8 +819,7 @@ for arrayKind = arrayKinds'
             legendHandle.TextColor = "k";
     end
 end
-annotation(speedupFigure, "textbox", [0.02, 0.92, 0.96, 0.06], ...
-    "String", hardwareLabel, "EdgeColor", "none", "HorizontalAlignment", "center");
+sgtitle(speedupFigure, hardwareLabel, "Color", "k", "FontSize", 10);
 saveas(speedupFigure, fullfile(outputDirectory, "fieldII-Ekhos-benchmark-" + timestamp + "-speedup.png"));
 saveas(speedupFigure, fullfile(outputDirectory, "fieldII-Ekhos-benchmark-" + timestamp + "-speedup.fig"));
 close(speedupFigure);
