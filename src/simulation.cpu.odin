@@ -6,6 +6,7 @@ import "core:math/linalg"
 import "core:mem"
 import "core:simd"
 import "core:slice"
+import "core:sync"
 import "core:thread"
 import "core:time"
 import ekhos_thread "ekhos:thread"
@@ -138,7 +139,7 @@ simulate_cpu :: proc(
 	return
 }
 
-SCATTER_BATCH_SIZE :: 256
+SCATTER_BATCH_SIZE :: 128
 DATALINE_BATCH_SIZE :: 1024
 PROGRESS_LOG_DELAY_THRESHOLD :: 20.0 * time.Second
 PROGRESS_LOG_INTERVAL :: 20.0 * time.Second
@@ -158,6 +159,15 @@ cpu_stage_timing_add :: proc(total: ^time.Duration, stopwatch: ^time.Stopwatch) 
 	time.stopwatch_stop(stopwatch)
 	total^ += time.stopwatch_duration(stopwatch^)
 	stopwatch^ = {}
+}
+
+cpu_stage_timing_max :: proc(total: ^time.Duration, value: time.Duration) {
+	for {
+		current := sync.atomic_load_explicit(total, .Relaxed)
+		if value <= current do return
+		_, exchanged := sync.atomic_compare_exchange_weak_explicit(total, current, value, .Relaxed, .Relaxed)
+		if exchanged do return
+	}
 }
 
 log_cpu_timing :: proc(timing: CpuTiming, label: string, loc := #caller_location) {
@@ -194,10 +204,6 @@ total                         %16v                100.0%%`,
 }
 
 simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) -> (data: []f32, ok := true) {
-
-	if ekhos_thread.laneIdx(lane) != 0 {
-		return
-	}
 
 	utility.prof_scoped(#procedure)
 	totalStopwatch: time.Stopwatch
@@ -237,60 +243,98 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 
 	stageStopwatch: time.Stopwatch
 	timing: CpuStageTiming
+	sharedTiming: ^CpuTiming
+	if ekhos_thread.laneIdx(lane) == 0 {
+		simulator.timing.stages = {}
+		simulator.timing.simulation = 0
+		sharedTiming = &simulator.timing
+	}
+	ekhos_thread.laneSyncValue(lane, 0, &sharedTiming)
 	time.stopwatch_start(&stageStopwatch)
 	utility.prof_begin("Allocate")
-	data = make_aligned([]f32, sampleCount * receiveChannelCount * transmissionCount, 16)
-	simulator.job.data = data
-	elementImpulses := make([]ImpulseResponse, int(min(batchSize, scatterCount)) * len(elements), context.allocator)
-	transmissionSampleRanges := make([]SampleRange, int(min(batchSize, scatterCount)) * int(batchTxCount), context.allocator)
-	transmissionImpulses := make_aligned([]f32, int(min(batchSize, scatterCount)) * int(batchTxCount) * int(sampleCount), 16, context.allocator)
-	receiveChannelSampleRanges := make([]SampleRange, int(min(batchSize, scatterCount)) * int(batchRxCount), context.allocator)
-	receiveChannelImpulses := make_aligned([]f32, int(min(batchSize, scatterCount)) * int(batchRxCount) * int(sampleCount), 16, context.allocator)
-	batchScatters := make([]CpuScatterData, int(min(batchSize, scatterCount)), context.allocator)
+
+	elementImpulses: []ImpulseResponse
+	transmissionSampleRanges: []SampleRange
+	transmissionImpulses: []f32
+	receiveChannelSampleRanges: []SampleRange
+	receiveChannelImpulses: []f32
+	batchScatters: []CpuScatterData
+	if ekhos_thread.laneIdx(lane) == 0 {
+		data = make_aligned([]f32, sampleCount * receiveChannelCount * transmissionCount, 16)
+		simulator.job.data = data
+		elementImpulses = make([]ImpulseResponse, int(min(batchSize, scatterCount)) * len(elements), context.allocator)
+		transmissionSampleRanges = make([]SampleRange, int(min(batchSize, scatterCount)) * int(batchTxCount), context.allocator)
+		transmissionImpulses = make_aligned([]f32, int(min(batchSize, scatterCount)) * int(batchTxCount) * int(sampleCount), 16, context.allocator)
+		receiveChannelSampleRanges = make([]SampleRange, int(min(batchSize, scatterCount)) * int(batchRxCount), context.allocator)
+		receiveChannelImpulses = make_aligned([]f32, int(min(batchSize, scatterCount)) * int(batchRxCount) * int(sampleCount), 16, context.allocator)
+		batchScatters = make([]CpuScatterData, int(min(batchSize, scatterCount)), context.allocator)
+	}
 	timeDomainScatters := make([dynamic]CpuScatterData, 0, int(min(batchSize, scatterCount)), context.allocator)
 	frequencyDomainScatters := make([dynamic]CpuScatterData, 0, int(min(batchSize, scatterCount)), context.allocator)
-	defer delete(elementImpulses)
-	defer delete(transmissionSampleRanges)
-	defer delete(transmissionImpulses)
-	defer delete(receiveChannelSampleRanges)
-	defer delete(receiveChannelImpulses)
-	defer delete(batchScatters)
+	defer if ekhos_thread.laneIdx(lane) == 0 {
+		delete(elementImpulses)
+		delete(transmissionSampleRanges)
+		delete(transmissionImpulses)
+		delete(receiveChannelSampleRanges)
+		delete(receiveChannelImpulses)
+		delete(batchScatters)
+	}
 	defer delete(timeDomainScatters)
 	defer delete(frequencyDomainScatters)
+
 	pffftSetupCache := make(map[int]pffft.PffftSession, context.allocator)
 	defer {
 		for _, session in pffftSetupCache do pffft.destroy_setup(session)
 		delete(pffftSetupCache)
 	}
+
+	ekhos_thread.laneSyncValue(lane, 0, &data)
+	ekhos_thread.laneSyncValue(lane, 0, &elementImpulses)
+	ekhos_thread.laneSyncValue(lane, 0, &transmissionSampleRanges)
+	ekhos_thread.laneSyncValue(lane, 0, &transmissionImpulses)
+	ekhos_thread.laneSyncValue(lane, 0, &receiveChannelSampleRanges)
+	ekhos_thread.laneSyncValue(lane, 0, &receiveChannelImpulses)
+	ekhos_thread.laneSyncValue(lane, 0, &batchScatters)
 	utility.prof_end()
+
 	when CPU_STAGE_TIMING {
 		cpu_stage_timing_add(&timing.allocation, &stageStopwatch)
 	}
 
 	for scatterBatchStart: i32 = 0; scatterBatchStart < scatterCount; scatterBatchStart += batchSize {
+		ekhos_thread.laneSync(lane)
 		scatterBatchEnd := min(scatterBatchStart + batchSize, scatterCount)
 		scatterBatchCount := scatterBatchEnd - scatterBatchStart
+		laneScatterBatchStart, laneScatterBatchEnd, laneWork := ekhos_thread.laneRange(lane, scatterBatchEnd - scatterBatchStart)
+		if !laneWork do continue
+		laneScatterBatchStart += auto_cast scatterBatchStart
+		laneScatterBatchEnd += auto_cast scatterBatchStart
 
 		when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 		utility.prof_begin("Element SIR Calculation")
-		for scatter, scatterIndex in scatters[scatterBatchStart:scatterBatchEnd] {
-			scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
+		ekhos_thread.laneSync(lane)
+		for scatter, scatterIndex in scatters[laneScatterBatchStart:laneScatterBatchEnd] {
+			scatterBatchIndex := scatterIndex + laneScatterBatchStart - auto_cast scatterBatchStart
+			scatterElementImpulses := elementImpulses[scatterBatchIndex * auto_cast len(elements):][:len(elements)]
 			for element, elementIndex in elements {
 				scatterElementImpulses[elementIndex] = get_spatial_impulse_response(speedOfSound, samplingFrequency, element, scatter)
 			}
 		}
+		ekhos_thread.laneSync(lane)
 		utility.prof_end()
 		when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.elementResponses, &stageStopwatch)
 
 		for txBatchStart: i32 = 0; txBatchStart < transmissionCount; txBatchStart += DATALINE_BATCH_SIZE {
 			txBatchEnd := min(txBatchStart + DATALINE_BATCH_SIZE, transmissionCount)
 			txBatchCount := txBatchEnd - txBatchStart
+			laneTxBatchStart, laneTxBatchEnd, _ := ekhos_thread.laneRange(lane, txBatchCount)
 
 			// Coalesce Transmissions
 			utility.prof_begin("Coalesce Transmissions")
+			ekhos_thread.laneSync(lane)
 			when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 			coalesce_impulses(
-				transmissions[txBatchStart:txBatchEnd],
+				transmissions[txBatchStart:][laneTxBatchStart:laneTxBatchEnd],
 				scatters[scatterBatchStart:scatterBatchEnd],
 				elements,
 				elementImpulses,
@@ -298,22 +342,26 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 				transmissionImpulses,
 				sampleCount,
 				batchTxCount,
+				laneTxBatchStart,
 				samplingFrequency,
 				0,
 				cumulative,
 				false,
 			)
 			when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.transmitCoalesce, &stageStopwatch)
+			ekhos_thread.laneSync(lane)
 			utility.prof_end()
 
 			for rxBatchStart: i32 = 0; rxBatchStart < receiveChannelCount; rxBatchStart += DATALINE_BATCH_SIZE {
 				rxBatchEnd := min(rxBatchStart + DATALINE_BATCH_SIZE, receiveChannelCount)
 				rxBatchCount := rxBatchEnd - rxBatchStart
+				laneRxBatchStart, laneRxBatchEnd, _ := ekhos_thread.laneRange(lane, rxBatchCount)
 
 				utility.prof_begin("Coalesce Receive Channels")
+				ekhos_thread.laneSync(lane)
 				when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 				coalesce_impulses(
-					receiveChannels[rxBatchStart:rxBatchEnd],
+					receiveChannels[rxBatchStart:][laneRxBatchStart:laneRxBatchEnd],
 					scatters[scatterBatchStart:scatterBatchEnd],
 					elements,
 					elementImpulses,
@@ -321,32 +369,39 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 					receiveChannelImpulses,
 					sampleCount,
 					batchRxCount,
+					laneRxBatchStart,
 					samplingFrequency,
 					startTime,
 					cumulative,
 					true,
 				)
+				ekhos_thread.laneSync(lane)
 				when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.receiveCoalesce, &stageStopwatch)
 				utility.prof_end()
 
-				for scatterIndex in scatterBatchStart ..< scatterBatchEnd {
-					localScatterIndex := scatterIndex - scatterBatchStart
-					batchScatters[localScatterIndex] = {
-						scatter                    = scatters[scatterIndex],
-						transmissionSampleRanges   = transmissionSampleRanges[int(
-							localScatterIndex,
-						) * int(batchTxCount):int(localScatterIndex + 1) * int(batchTxCount)],
-						receiveChannelSampleRanges = receiveChannelSampleRanges[int(localScatterIndex) * int(batchRxCount):][:int(batchRxCount)],
-						transmissionImpulses       = transmissionImpulses[int(
-							localScatterIndex,
-						) * int(batchTxCount) * int(sampleCount):][:int(sampleCount) * int(batchTxCount)],
-						receiveChannelImpulses     = receiveChannelImpulses[int(
-							localScatterIndex,
-						) * int(batchRxCount) * int(sampleCount):][:int(batchRxCount) * int(sampleCount)],
+				if ekhos_thread.laneIdx(lane) == 0 {
+					for scatterIndex in scatterBatchStart ..< scatterBatchEnd {
+						localScatterIndex := scatterIndex - scatterBatchStart
+						batchScatters[localScatterIndex] = {
+							scatter                    = scatters[scatterIndex],
+							transmissionSampleRanges   = transmissionSampleRanges[int(
+								localScatterIndex,
+							) * int(batchTxCount):int(localScatterIndex + 1) * int(batchTxCount)],
+							receiveChannelSampleRanges = receiveChannelSampleRanges[int(localScatterIndex) * int(batchRxCount):][:int(batchRxCount)],
+							transmissionImpulses       = transmissionImpulses[int(
+								localScatterIndex,
+							) * int(batchTxCount) * int(sampleCount):][:int(sampleCount) * int(batchTxCount)],
+							receiveChannelImpulses     = receiveChannelImpulses[int(
+								localScatterIndex,
+							) * int(batchRxCount) * int(sampleCount):][:int(batchRxCount) * int(sampleCount)],
+						}
 					}
 				}
+				ekhos_thread.laneSync(lane)
 
-				for dataLineIndex: i32 = 0; dataLineIndex < txBatchCount * rxBatchCount; dataLineIndex += 1 {
+				ekhos_thread.laneSync(lane)
+				dataLineBatchStart, dataLineBatchEnd, _ := ekhos_thread.laneRange(lane, txBatchCount * rxBatchCount)
+				for dataLineIndex: i32 = auto_cast dataLineBatchStart; dataLineIndex < auto_cast dataLineBatchEnd; dataLineIndex += 1 {
 					transmissionIndex := dataLineIndex / rxBatchCount
 					receiveChannelIndex := dataLineIndex % rxBatchCount
 					clear(&timeDomainScatters)
@@ -406,17 +461,28 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 						}
 					}
 				}
+				ekhos_thread.laneSync(lane)
 			}
 		}
 	}
 
 	when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
-	apply_temporal_responses(data, sampleCount, 1 / samplingFrequency, transmissions, receiveChannels, impulses, excitations)
+	ekhos_thread.laneSync(lane)
+	if ekhos_thread.laneIdx(lane) == 0 {
+		apply_temporal_responses(data, sampleCount, 1 / samplingFrequency, transmissions, receiveChannels, impulses, excitations)
+	}
+	ekhos_thread.laneSync(lane)
 	when CPU_STAGE_TIMING do cpu_stage_timing_add(&timing.temporal, &stageStopwatch)
 	when CPU_STAGE_TIMING {
 		time.stopwatch_stop(&totalStopwatch)
-		simulator.timing.stages = timing
-		simulator.timing.simulation = time.stopwatch_duration(totalStopwatch)
+		cpu_stage_timing_max(&sharedTiming.stages.allocation, timing.allocation)
+		cpu_stage_timing_max(&sharedTiming.stages.elementResponses, timing.elementResponses)
+		cpu_stage_timing_max(&sharedTiming.stages.transmitCoalesce, timing.transmitCoalesce)
+		cpu_stage_timing_max(&sharedTiming.stages.receiveCoalesce, timing.receiveCoalesce)
+		cpu_stage_timing_max(&sharedTiming.stages.convolution, timing.convolution)
+		cpu_stage_timing_max(&sharedTiming.stages.temporal, timing.temporal)
+		cpu_stage_timing_max(&sharedTiming.simulation, time.stopwatch_duration(totalStopwatch))
+		ekhos_thread.laneSync(lane)
 	}
 	return
 }
@@ -439,6 +505,7 @@ coalesce_impulses :: proc(
 	impulses: []f32,
 	sampleCount: i32,
 	batchElementSetCount: i32,
+	batchElementSetStart: int,
 	samplingFrequency, startTime: f32,
 	cumulative: bool,
 	$applyCumulativeOffset: bool,
@@ -461,9 +528,10 @@ coalesce_impulses :: proc(
 				elementSetSampleRange.minSample = min(elementSetSampleRange.minSample, i32(linalg.floor(elementImpulse.rect.x - 0.5)))
 				elementSetSampleRange.maxSample = max(elementSetSampleRange.maxSample, i32(linalg.ceil(elementImpulse.rect.w + 0.5)))
 			}
-			sampleRanges[scatterIndex * int(batchElementSetCount) + elementSetIndex] = elementSetSampleRange
+			sampleRanges[scatterIndex * int(batchElementSetCount) + batchElementSetStart + elementSetIndex] = elementSetSampleRange
 			elementSetSampleCount := sample_range_sample_count(elementSetSampleRange)
-			elementSetImpulse := impulses[(scatterIndex * int(batchElementSetCount) + elementSetIndex) * int(sampleCount):][:elementSetSampleCount]
+			elementSetImpulse := impulses[(scatterIndex * int(batchElementSetCount) + batchElementSetStart + elementSetIndex) *
+			int(sampleCount):][:elementSetSampleCount]
 			slice.zero(elementSetImpulse)
 			utility.prof_end()
 			utility.prof_begin("Sampling")
