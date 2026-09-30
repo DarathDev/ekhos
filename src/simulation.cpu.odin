@@ -89,6 +89,9 @@ plan_cpu_simulation :: proc(simulator: ^cpuSimulator, settings: ^SimulationSetti
 		destroy_cpu_simulator(simulator)
 		simulator^, ok = create_cpu_simulator(threadCount)
 		if !ok do return
+	}
+	workersStarted := len(simulator.threads) == max(threadCount - 1, 0) && (threadCount <= 1 || simulator.threads[0] != nil)
+	if !workersStarted {
 		for laneIndex in 1 ..< threadCount {
 			worker := new(CpuWorker, simulator.allocator)
 			worker.simulator = simulator
@@ -340,6 +343,12 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 	}
 
 	for scatterBatchStart: i32 = 0; scatterBatchStart < scatterCount; scatterBatchStart += batchSize {
+		ekhos_thread.laneSync(lane)
+		if ekhos_thread.laneIdx(lane) == 0 {
+			txWorkCounter^ = 0
+			rxWorkCounter^ = 0
+			dataLineWorkCounter^ = 0
+		}
 		ekhos_thread.laneSync(lane)
 		scatterBatchEnd := min(scatterBatchStart + batchSize, scatterCount)
 		scatterBatchCount := scatterBatchEnd - scatterBatchStart

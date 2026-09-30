@@ -23,8 +23,10 @@ destroy_cpu_simulator_c :: proc "c" (simulator: ^Simulator, cLogger: cLogProc = 
 	context.logger = c_logger(context.logger, cLogger, userData)
 	context.assertion_failure_proc = c_assertion(cAssert, userData)
 	utility.check(simulator != nil) or_return
-	if cpuSimulator, cpuSimOk := simulator.(cpuSimulator); cpuSimOk {
-		destroy_cpu_simulator(&cpuSimulator)
+	switch &sim in simulator {
+	case cpuSimulator:
+		destroy_cpu_simulator(&sim)
+	case vkSimulator, hybridSimulator:
 	}
 	return
 }
@@ -91,8 +93,10 @@ destroy_hybrid_simulator_c :: proc "c" (simulator: ^Simulator, cLogger: cLogProc
 	context.logger = c_logger(context.logger, cLogger, userData)
 	context.assertion_failure_proc = c_assertion(cAssert, userData)
 	utility.check(simulator != nil) or_return
-	if hybridSimulator, hybridSimOk := simulator.(hybridSimulator); hybridSimOk {
-		destroy_hybrid_simulator(&hybridSimulator)
+	switch &sim in simulator {
+	case hybridSimulator:
+		destroy_hybrid_simulator(&sim)
+	case cpuSimulator, vkSimulator:
 	}
 	return
 }
