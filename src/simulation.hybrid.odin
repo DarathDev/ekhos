@@ -23,7 +23,7 @@ HybridCpuJob :: struct {
 }
 
 create_hybrid_simulator :: proc(settings: SimulationSettings) -> (simulator: hybridSimulator, ok := true) {
-	simulator.cpu, ok = create_cpu_simulator(int(settings.cpuSettings.threadCount))
+	simulator.cpu, ok = create_cpu_simulator(resolve_cpu_thread_count(settings.cpuSettings.threadCount))
 	if !ok do return
 	gpu, gpuResult := create_vulkan_simulator(settings)
 	if gpuResult != .SUCCESS {

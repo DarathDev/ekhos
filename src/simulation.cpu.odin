@@ -4,6 +4,7 @@ import "base:intrinsics"
 import "core:log"
 import "core:math/linalg"
 import "core:mem"
+import "core:os"
 import "core:simd"
 import "core:slice"
 import "core:sync"
@@ -53,6 +54,13 @@ CpuTiming :: struct {
 	stages:     CpuStageTiming,
 }
 
+resolve_cpu_thread_count :: proc(threadCount: u32) -> int {
+	if threadCount == 0 {
+		return max(os.get_processor_core_count(), 1)
+	}
+	return int(threadCount)
+}
+
 create_cpu_simulator :: proc(threadCount: int = 1) -> (simulator: cpuSimulator, ok := true) {
 	threadCount := threadCount
 	threadCount = max(threadCount, 1)
@@ -76,7 +84,7 @@ destroy_cpu_simulator :: proc(simulator: ^cpuSimulator) {
 
 plan_cpu_simulation :: proc(simulator: ^cpuSimulator, settings: ^SimulationSettings) -> (ok := true) {
 	info := simulator.info
-	threadCount := max(int(settings.cpuSettings.threadCount), 1)
+	threadCount := resolve_cpu_thread_count(settings.cpuSettings.threadCount)
 	if len(simulator.lanes) != threadCount {
 		destroy_cpu_simulator(simulator)
 		simulator^, ok = create_cpu_simulator(threadCount)
