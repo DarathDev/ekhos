@@ -3,6 +3,7 @@ package ekhos_scripts
 import "core:log"
 import "core:math"
 import "core:math/rand"
+import "core:os"
 import "core:slice"
 import "core:testing"
 import ekhos "ekhos:."
@@ -24,6 +25,7 @@ RUN_MATRIX :: bool(#config(TEST_RUN_MATRIX, true))
 MIN_CORRELATION :: 0.95
 MAX_RMS_ERROR_PERCENT :: 1
 MAX_RELATIVE_DIFFERENCE_PERCENT :: 5
+BENCHMARK_HYBRID_CPU_FRACTIONS :: []f32{0.25, 0.5, 0.75}
 
 main :: proc() {
 	context.logger = log.create_console_logger()
@@ -72,6 +74,57 @@ temporalResponseTest :: proc(t: ^testing.T) {
 	_ = utility.expect(t, passed)
 }
 
+compare_simulation_outputs :: proc(label: string, reference, actual: []f32) -> (ok := true) {
+	if len(reference) != len(actual) {
+		log.errorf("%s output length mismatch: %d != %d", label, len(reference), len(actual))
+		return false
+	}
+
+	maxDifference: f32
+	sumSquaredDifference: f64
+	sumSquaredReference: f64
+	sumSquaredActual: f64
+	dotProduct: f64
+	referencePeak: f32
+	actualPeak: f32
+	for i in 0 ..< len(reference) {
+		referenceValue := reference[i]
+		actualValue := actual[i]
+		referenceAbs := math.abs(referenceValue)
+		actualAbs := math.abs(actualValue)
+		if referenceAbs > referencePeak do referencePeak = referenceAbs
+		if actualAbs > actualPeak do actualPeak = actualAbs
+
+		difference := referenceValue - actualValue
+		sumSquaredDifference += f64(difference) * f64(difference)
+		sumSquaredReference += f64(referenceValue) * f64(referenceValue)
+		sumSquaredActual += f64(actualValue) * f64(actualValue)
+		dotProduct += f64(referenceValue) * f64(actualValue)
+		maxDifference = max(maxDifference, math.abs(difference))
+	}
+
+	normReference := math.sqrt(sumSquaredReference)
+	normActual := math.sqrt(sumSquaredActual)
+	normDifference := math.sqrt(sumSquaredDifference)
+	correlation := (normReference > 0 && normActual > 0) ? f32(dotProduct / (normReference * normActual)) : 0.0
+	energyRatio := sumSquaredReference > 0 ? f32(sumSquaredDifference / sumSquaredReference) : 0.0
+	peakRatio := referencePeak > 0 ? actualPeak / referencePeak : (actualPeak == 0 ? 1.0 : 0.0)
+	rmsErrorPercent := sumSquaredReference > 0 ? f32((normDifference / normReference) * 100.0) : 0.0
+	maxRelativeDifferencePercent := referencePeak > 0 ? (maxDifference / referencePeak) * 100.0 : 0.0
+
+	log.infof(
+		"%s signal metrics: samples=%d maxRelDiff=%.2f%% RMS=%.2f%% corr=%.6f peakRatio=%.4f energyRatio=%.4e",
+		label,
+		len(reference),
+		maxRelativeDifferencePercent,
+		rmsErrorPercent,
+		correlation,
+		peakRatio,
+		energyRatio,
+	)
+	return correlation >= MIN_CORRELATION && rmsErrorPercent <= MAX_RMS_ERROR_PERCENT && maxRelativeDifferencePercent <= MAX_RELATIVE_DIFFERENCE_PERCENT
+}
+
 compare_simulators :: proc(
 	settings: ekhos.SimulationSettings,
 	transmissions: []ekhos.Transmission,
@@ -85,6 +138,8 @@ compare_simulators :: proc(
 ) {
 	cpuSettings := settings
 	gpuSettings := settings
+	hybridSettings := settings
+	hybridSettings.hybridSettings.cpuScatterFraction = 0.5
 
 	cpuSimulator, cpuOk := ekhos.create_cpu_simulator()
 	if !cpuOk do return false
@@ -97,17 +152,23 @@ compare_simulators :: proc(
 	gpuSim: ekhos.Simulator = gpuSimulator
 	defer ekhos.destroy_vulkan_simulator(&gpuSim.(ekhos.vkSimulator))
 
+	hybridSimulator, hybridOk := ekhos.create_hybrid_simulator(hybridSettings)
+	if !hybridOk do return false
+	hybridSim: ekhos.Simulator = hybridSimulator
+	defer ekhos.destroy_hybrid_simulator(&hybridSim.(ekhos.hybridSimulator))
+
 	if !ekhos.plan_simulation(&cpuSim, &cpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations) do return false
 	if !ekhos.plan_simulation(&gpuSim, &gpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations) do return false
+	if !ekhos.plan_simulation(&hybridSim, &hybridSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations) do return false
 	if !RUN_SIMULATION do return true
 
 	if BENCHMARK {
 		cpuWarmup, cpuWarmupOk := ekhos.simulate(&cpuSim, &cpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
 		if !cpuWarmupOk do return false
-		defer delete(cpuWarmup)
+		delete(cpuWarmup)
 		gpuWarmup, gpuWarmupOk := ekhos.simulate(&gpuSim, &gpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
 		if !gpuWarmupOk do return false
-		defer delete(gpuWarmup)
+		delete(gpuWarmup)
 
 		cpuTotal: f64
 		gpuTotal: f64
@@ -116,10 +177,8 @@ compare_simulators :: proc(
 		for _ in 0 ..< BENCHMARK_ITERATIONS {
 			cpuData, cpuSimulationOk := ekhos.simulate(&cpuSim, &cpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
 			if !cpuSimulationOk do return false
-			defer delete(cpuData)
 			gpuData, gpuSimulationOk := ekhos.simulate(&gpuSim, &gpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
 			if !gpuSimulationOk do return false
-			defer delete(gpuData)
 
 			cpuTime := cpuSettings.metrics.simulationTime
 			gpuTime := gpuSettings.metrics.simulationTime
@@ -127,12 +186,13 @@ compare_simulators :: proc(
 			gpuTotal += f64(gpuTime)
 			cpuMinimum = min(cpuMinimum, cpuTime)
 			gpuMinimum = min(gpuMinimum, gpuTime)
+			delete(cpuData)
+			delete(gpuData)
 		}
-
 		cpuAverage := f32(cpuTotal / f64(BENCHMARK_ITERATIONS))
 		gpuAverage := f32(gpuTotal / f64(BENCHMARK_ITERATIONS))
 		log.infof(
-			"CPU/GPU benchmark: elements=%d scatters=%d transmissions=%d receiveChannels=%d iterations=%d cpuAvg=%.6fs gpuAvg=%.6fs cpuMin=%.6fs gpuMin=%.6fs speedup=%.3fx",
+			"CPU/GPU benchmark: elements=%d scatters=%d transmissions=%d receiveChannels=%d iterations=%d cpuAvg=%.6fs gpuAvg=%.6fs cpuMin=%.6fs gpuMin=%.6fs gpuSpeedup=%.3fx",
 			len(elements),
 			len(scatters),
 			len(transmissions),
@@ -144,6 +204,71 @@ compare_simulators :: proc(
 			gpuMinimum,
 			gpuAverage > 0 ? cpuAverage / gpuAverage : 0,
 		)
+
+		for cpuScatterFraction in BENCHMARK_HYBRID_CPU_FRACTIONS {
+			hybridFractionSettings := hybridSettings
+			hybridFractionSettings.hybridSettings.cpuScatterFraction = cpuScatterFraction
+			hybridFractionSimulator, hybridFractionOk := ekhos.create_hybrid_simulator(hybridFractionSettings)
+			if !hybridFractionOk do return false
+			hybridFractionSim: ekhos.Simulator = hybridFractionSimulator
+			if !ekhos.plan_simulation(&hybridFractionSim, &hybridFractionSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations) {
+				ekhos.destroy_hybrid_simulator(&hybridFractionSim.(ekhos.hybridSimulator))
+				return false
+			}
+
+			hybridWarmup, hybridWarmupOk := ekhos.simulate(
+				&hybridFractionSim,
+				&hybridFractionSettings,
+				transmissions,
+				receiveChannels,
+				elements,
+				scatters,
+				impulses,
+				excitations,
+			)
+			if !hybridWarmupOk {
+				ekhos.destroy_hybrid_simulator(&hybridFractionSim.(ekhos.hybridSimulator))
+				return false
+			}
+			delete(hybridWarmup)
+
+			hybridTotal: f64
+			hybridMinimum: f32 = 3.4028235e38
+			for _ in 0 ..< BENCHMARK_ITERATIONS {
+				hybridData, hybridSimulationOk := ekhos.simulate(
+					&hybridFractionSim,
+					&hybridFractionSettings,
+					transmissions,
+					receiveChannels,
+					elements,
+					scatters,
+					impulses,
+					excitations,
+				)
+				if !hybridSimulationOk {
+					ekhos.destroy_hybrid_simulator(&hybridFractionSim.(ekhos.hybridSimulator))
+					return false
+				}
+				hybridTime := hybridFractionSettings.metrics.simulationTime
+				hybridTotal += f64(hybridTime)
+				hybridMinimum = min(hybridMinimum, hybridTime)
+				delete(hybridData)
+			}
+
+			hybridAverage := f32(hybridTotal / f64(BENCHMARK_ITERATIONS))
+			log.infof(
+				"Hybrid benchmark: cpuCores=%d cpuScatterFraction=%.2f elements=%d scatters=%d iterations=%d average=%.6fs minimum=%.6fs cpuSpeedup=%.3fx",
+				os.get_processor_core_count(),
+				cpuScatterFraction,
+				len(elements),
+				len(scatters),
+				BENCHMARK_ITERATIONS,
+				hybridAverage,
+				hybridMinimum,
+				hybridAverage > 0 ? cpuAverage / hybridAverage : 0,
+			)
+			ekhos.destroy_hybrid_simulator(&hybridFractionSim.(ekhos.hybridSimulator))
+		}
 	}
 
 	cpuData, cpuSimulationOk := ekhos.simulate(&cpuSim, &cpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
@@ -152,61 +277,11 @@ compare_simulators :: proc(
 	gpuData, gpuSimulationOk := ekhos.simulate(&gpuSim, &gpuSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
 	if !gpuSimulationOk do return false
 	defer delete(gpuData)
+	hybridData, hybridSimulationOk := ekhos.simulate(&hybridSim, &hybridSettings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
+	if !hybridSimulationOk do return false
+	defer delete(hybridData)
 
-	if len(cpuData) != len(gpuData) {
-		log.errorf("CPU/GPU output length mismatch: %d != %d", len(cpuData), len(gpuData))
-		return false
-	}
-
-	maxDifference: f32
-	sumSquaredDifference: f64
-	sumSquaredCpu: f64
-	sumSquaredGpu: f64
-	dotProduct: f64
-	cpuPeak: f32
-	gpuPeak: f32
-
-	for i in 0 ..< len(cpuData) {
-		cpuValue := cpuData[i]
-		gpuValue := gpuData[i]
-		cpuAbs := math.abs(cpuValue)
-		gpuAbs := math.abs(gpuValue)
-		if cpuAbs > cpuPeak do cpuPeak = cpuAbs
-		if gpuAbs > gpuPeak do gpuPeak = gpuAbs
-
-		difference := cpuValue - gpuValue
-		sumSquaredDifference += f64(difference) * f64(difference)
-		sumSquaredCpu += f64(cpuValue) * f64(cpuValue)
-		sumSquaredGpu += f64(gpuValue) * f64(gpuValue)
-		dotProduct += f64(cpuValue) * f64(gpuValue)
-
-		absoluteDifference := math.abs(difference)
-		if absoluteDifference > maxDifference {
-			maxDifference = absoluteDifference
-		}
-	}
-
-	normCpu := math.sqrt(sumSquaredCpu)
-	normGpu := math.sqrt(sumSquaredGpu)
-	normDiff := math.sqrt(sumSquaredDifference)
-
-	correlation := (normCpu > 0 && normGpu > 0) ? f32(dotProduct / (normCpu * normGpu)) : 0.0
-	energyRatio := sumSquaredCpu > 0 ? f32(sumSquaredDifference / sumSquaredCpu) : 0.0
-	peakRatio := cpuPeak > 0 ? gpuPeak / cpuPeak : (gpuPeak == 0 ? 1.0 : 0.0)
-	rmsErrorPercent := sumSquaredCpu > 0 ? f32((normDiff / normCpu) * 100.0) : 0.0
-	maxRelativeDiffPercent := cpuPeak > 0 ? (maxDifference / cpuPeak) * 100.0 : 0.0
-
-	log.infof(
-		"CPU/GPU signal metrics: samples=%d maxRelDiff=%.2f%% RMS=%.2f%% corr=%.6f peakRatio=%.4f energyRatio=%.4e",
-		len(cpuData),
-		maxRelativeDiffPercent,
-		rmsErrorPercent,
-		correlation,
-		peakRatio,
-		energyRatio,
-	)
-
-	return correlation >= MIN_CORRELATION && rmsErrorPercent <= MAX_RMS_ERROR_PERCENT && maxRelativeDiffPercent <= MAX_RELATIVE_DIFFERENCE_PERCENT
+	return compare_simulation_outputs("CPU/GPU", cpuData, gpuData) && compare_simulation_outputs("CPU/Hybrid", cpuData, hybridData)
 }
 
 oneRectSimulation :: proc() -> (ok := true) {

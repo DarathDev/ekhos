@@ -8,6 +8,7 @@ classdef Simulation < handle
     properties
         CpuSettings(1,1) ekhos.CpuSettings = ekhos.CpuSettings();
         GpuSettings(1,1) ekhos.GpuSettings = ekhos.GpuSettings();
+        HybridSettings(1,1) ekhos.HybridSettings = ekhos.HybridSettings();
         Metrics(1,1) ekhos.SimulatorMetrics = ekhos.SimulatorMetrics();
     end
 

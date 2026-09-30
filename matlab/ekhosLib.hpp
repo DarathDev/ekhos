@@ -34,6 +34,7 @@ struct Simulator { };
 enum class SimulatorType : u32 {
 	CPU = 0,
 	GPU = 1,
+	Hybrid = 2,
 };
 
 enum class GpuBackend : u32 {
@@ -49,6 +50,10 @@ struct GpuSettings {
 	u32 enableDriverDebugMessages;
 };
 
+struct HybridSettings {
+  f32 cpuScatterFraction;
+};
+
 struct SimulationMetrics {
 	f32 simulationTime;
 };
@@ -61,6 +66,7 @@ struct SimulationSettings {
 	u32 cumulative;
 	CpuSettings cpuSettings;
 	GpuSettings gpuSettings;
+  HybridSettings hybridSettings;
 	SimulationMetrics simulationMetrics;
 };
 
@@ -164,6 +170,21 @@ extern "C" {
 		CAssertProc assertFunc,
 		void* pUserData
 	);
+
+	LIB_FN bool create_hybrid_simulator_c(
+		Simulator **simulator, 
+		SimulationSettings *settings, 
+		CLogProc logFunc, 
+		CAssertProc assertFunc, 
+		void *pUserData
+	);
+
+	LIB_FN void destroy_hybrid_simulator_c(
+		Simulator *simulator, 
+		CLogProc logFunc, 
+		CAssertProc assertFunc, 
+		void *pUserData
+	);	
 
 	LIB_FN bool plan_simulation_c(
 		Simulator* simulator,

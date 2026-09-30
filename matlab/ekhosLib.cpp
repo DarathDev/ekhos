@@ -126,6 +126,9 @@ public:
 				this
 			);
 			break;
+		case SimulatorType::Hybrid:
+			create_hybrid_simulator_c(&simulator, &settings, printLogger, throwAssertion, this);
+			break;
 		}
 
 		plan_simulation_c(simulator, &settings, transmissions, receiveChannels, elements,
@@ -159,6 +162,9 @@ public:
 			break;
 		case SimulatorType::GPU:
 			destroy_vulkan_simulator_c(simulator, printLogger, throwAssertion, this);
+			break;
+		case SimulatorType::Hybrid:
+			destroy_hybrid_simulator_c(simulator, printLogger, throwAssertion, this);
 			break;
 		}
 
@@ -203,6 +209,8 @@ public:
 			matlabPtr->getProperty(mxSimulator, u"CpuSettings");
 		const ObjectArray mxGpuSettings =
 			matlabPtr->getProperty(mxSimulator, u"GpuSettings");
+		const ObjectArray mxHybridSettings =
+			matlabPtr->getProperty(mxSimulator, u"HybridSettings");
 		const TypedArray<f32> mxSamplingFrequency =
 			matlabPtr->getProperty(mxSimulator, u"SamplingFrequency");
 		const TypedArray<f32> mxSpeedOfSound =
@@ -232,6 +240,9 @@ public:
 		else if (simulatorTypeName == "GPU") {
 			simulatorType = SimulatorType::GPU;
 		}
+		else if (simulatorTypeName == "Hybrid") {
+			simulatorType = SimulatorType::Hybrid;
+		}
 		else {
 			throw std::runtime_error("Unsupported simulator type");
 		}
@@ -252,6 +263,8 @@ public:
 		}
 		settings.gpuSettings.enableDriverDebugMessages =
 			matlabPtr->getProperty(mxGpuSettings, "EnableDriverDebugMessages")[0] ? 1u : 0u;
+		settings.hybridSettings.cpuScatterFraction =
+			matlabPtr->getProperty(mxHybridSettings, "CpuScatterFraction")[0];
 
 		elements = { nullptr, nullptr, nullptr, nullptr, nullptr, 0 };
 		transmissions = { nullptr, 0 };

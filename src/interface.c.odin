@@ -64,6 +64,40 @@ destroy_vulkan_simulator_c :: proc "c" (simulator: ^Simulator, cLogger: cLogProc
 }
 
 @(export)
+create_hybrid_simulator_c :: proc "c" (
+	simulator: ^^Simulator,
+	settings: ^SimulationSettings,
+	cLogger: cLogProc = nil,
+	cAssert: cAssertProc = nil,
+	userData: rawptr = nil,
+) -> (
+	ok := true,
+) {
+	if !ekhos_vk.EKHOS_VULKAN_INITIALIZED {
+		ekhos_vk.initialize()
+	}
+	context = runtime.default_context()
+	context.logger = c_logger(context.logger, cLogger, userData)
+	context.assertion_failure_proc = c_assertion(cAssert, userData)
+	simulator^ = new(Simulator)
+	utility.check(settings != nil) or_return
+	simulator^^, ok = create_hybrid_simulator(settings^)
+	return
+}
+
+@(export)
+destroy_hybrid_simulator_c :: proc "c" (simulator: ^Simulator, cLogger: cLogProc = nil, cAssert: cAssertProc = nil, userData: rawptr = nil) -> (ok := true) {
+	context = runtime.default_context()
+	context.logger = c_logger(context.logger, cLogger, userData)
+	context.assertion_failure_proc = c_assertion(cAssert, userData)
+	utility.check(simulator != nil) or_return
+	if hybridSimulator, hybridSimOk := simulator.(hybridSimulator); hybridSimOk {
+		destroy_hybrid_simulator(&hybridSimulator)
+	}
+	return
+}
+
+@(export)
 plan_simulation_c :: proc "c" (
 	simulator: ^Simulator,
 	settings: ^SimulationSettings,

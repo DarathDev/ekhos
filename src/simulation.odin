@@ -6,8 +6,8 @@ import "core:math/bits"
 import "core:math/linalg"
 import "core:slice"
 import "core:time"
-import rdoc "import:renderdoc"
 import utility "ekhos:utility"
+import rdoc "import:renderdoc"
 
 @(private = "file")
 is_ok :: utility.is_ok
@@ -29,6 +29,7 @@ PULSE_CONVOLUTION_TILE_SIZE :: 256
 Simulator :: union {
 	cpuSimulator,
 	vkSimulator,
+	hybridSimulator,
 }
 
 SimulationSettings :: struct #packed {
@@ -39,6 +40,7 @@ SimulationSettings :: struct #packed {
 	cumulative:        b32,
 	cpuSettings:       CpuSettings,
 	gpuSettings:       GpuSettings,
+	hybridSettings:    HybridSettings,
 	metrics:           SimulationMetrics,
 }
 
@@ -49,6 +51,10 @@ CpuSettings :: struct {
 GpuSettings :: struct {
 	backend:                   GpuBackend,
 	enableDriverDebugMessages: b32,
+}
+
+HybridSettings :: struct {
+	cpuScatterFraction: f32,
 }
 
 GpuBackend :: enum u32 {
@@ -132,6 +138,9 @@ simulate :: proc(
 		assert(settings.cpuSettings.threadCount > 0, "CpuSettings.ThreadCount must be positive")
 	case vkSimulator:
 		assert(settings.gpuSettings.backend == .Vulkan, "Only the Vulkan GPU backend is implemented")
+	case hybridSimulator:
+		assert(settings.cpuSettings.threadCount > 0, "CpuSettings.ThreadCount must be positive")
+		assert(settings.gpuSettings.backend == .Vulkan, "Only the Vulkan GPU backend is implemented")
 	}
 
 	stopwatch: time.Stopwatch
@@ -153,6 +162,8 @@ simulate :: proc(
 		data = is_ok(check(simulate_vulkan(&sim, settings^, transmissions, receiveChannels, elements, scatters, impulses, excitations))) or_return
 	case cpuSimulator:
 		data = check(simulate_cpu(&sim, settings^, transmissions, receiveChannels, elements, scatters, impulses, excitations)) or_return
+	case hybridSimulator:
+		data, ok = simulate_hybrid(&sim, settings, transmissions, receiveChannels, elements, scatters, impulses, excitations)
 	}
 	time.stopwatch_stop(&stopwatch)
 	settings.metrics.simulationTime = auto_cast time.duration_seconds(time.stopwatch_duration(stopwatch))
@@ -191,6 +202,9 @@ plan_simulation :: proc(
 	case cpuSimulator:
 		assert(settings.cpuSettings.threadCount > 0, "CpuSettings.ThreadCount must be positive")
 	case vkSimulator:
+		assert(settings.gpuSettings.backend == .Vulkan, "Only the Vulkan GPU backend is implemented")
+	case hybridSimulator:
+		assert(settings.cpuSettings.threadCount > 0, "CpuSettings.ThreadCount must be positive")
 		assert(settings.gpuSettings.backend == .Vulkan, "Only the Vulkan GPU backend is implemented")
 	}
 	normalize_element_normals(elements)
@@ -245,6 +259,17 @@ plan_simulation :: proc(
 		sim.info.apertureSampleCount = apertureSampleCount
 		sim.info.scattererBatchSize = scattererBatchSize
 		check(plan_cpu_simulation(&sim, settings)) or_return
+	case hybridSimulator:
+		assert(
+			settings.hybridSettings.cpuScatterFraction >= 0 && settings.hybridSettings.cpuScatterFraction <= 1,
+			"Hybrid CPU scatter fraction must be in [0, 1]",
+		)
+		sim.cpu.info.apertureSampleCount = apertureSampleCount
+		sim.cpu.info.scattererBatchSize = scattererBatchSize
+		sim.gpu.info.apertureSampleCount = apertureSampleCount
+		sim.gpu.info.scattererBatchSize = scattererBatchSize
+		check(plan_cpu_simulation(&sim.cpu, settings)) or_return
+		is_ok(check(plan_vulkan_simulator(&sim.gpu, settings^, transmissions, receiveChannels, elements, scatters, impulses, excitations))) or_return
 	}
 	return
 }
@@ -255,6 +280,9 @@ log_simulation_timing :: proc(simulator: ^Simulator, label: string, loc := #call
 		log_cpu_timing(sim.timing, label, loc)
 	case vkSimulator:
 		log_gpu_timing(sim.timing, label, loc)
+	case hybridSimulator:
+		log_cpu_timing(sim.cpu.timing, label, loc)
+		log_gpu_timing(sim.gpu.timing, label, loc)
 	}
 }
 
@@ -393,9 +421,9 @@ distance_bounds_add_element :: proc(bounds: ^DistanceBounds, element: Rectangula
 distance_bounds_make_representatives :: proc(bounds: DistanceBounds, representatives: ^[8][3]f32) {
 	for corner in 0 ..< 8 {
 		representatives[corner] = [3]f32 {
-				((corner >> 0) & 1) == 0 ? bounds.minimum.x : bounds.maximum.x,
-				((corner >> 1) & 1) == 0 ? bounds.minimum.y : bounds.maximum.y,
-				((corner >> 2) & 1) == 0 ? bounds.minimum.z : bounds.maximum.z,
+			((corner >> 0) & 1) == 0 ? bounds.minimum.x : bounds.maximum.x,
+			((corner >> 1) & 1) == 0 ? bounds.minimum.y : bounds.maximum.y,
+			((corner >> 2) & 1) == 0 ? bounds.minimum.z : bounds.maximum.z,
 		}
 	}
 }
