@@ -6,8 +6,9 @@ import "core:time"
 import ekhos "ekhos:."
 import utility "ekhos:utility"
 
-CPU_TIMING_SCATTER_COUNT :: 1 << 18
-CPU_TIMING_ITERATIONS :: 3
+CPU_TIMING_SCATTER_COUNT :: 1 << 11
+CPU_TIMING_ITERATIONS :: 10
+CPU_TIMING_THREAD_COUNT :: #config(CPU_TIMING_THREAD_COUNT, 1)
 
 @(test)
 cpuLinearArrayStageTimingTest :: proc(t: ^testing.T) {
@@ -23,7 +24,7 @@ cpuLinearArrayStageTimingTest :: proc(t: ^testing.T) {
 		samplingFrequency = 100e6,
 		speedOfSound = 1540,
 		cumulative = false,
-		cpuSettings = {threadCount = 1},
+		cpuSettings = {threadCount = CPU_TIMING_THREAD_COUNT},
 	}
 
 	elements := make_transmit_and_receive_grid_elements(columnCount, rowCount, elementPitch, elementWidth, 0)

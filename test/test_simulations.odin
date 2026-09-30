@@ -88,12 +88,12 @@ compare_simulators :: proc(
 
 	cpuSimulator, cpuOk := ekhos.create_cpu_simulator()
 	if !cpuOk do return false
-	defer ekhos.destroy_cpu_simulator(&cpuSimulator)
+	cpuSim: ekhos.Simulator = cpuSimulator
+	defer ekhos.destroy_cpu_simulator(&cpuSim.(ekhos.cpuSimulator))
 
 	gpuSimulator, gpuResult := ekhos.create_vulkan_simulator(gpuSettings)
 	if gpuResult != .SUCCESS do return false
 
-	cpuSim: ekhos.Simulator = cpuSimulator
 	gpuSim: ekhos.Simulator = gpuSimulator
 	defer ekhos.destroy_vulkan_simulator(&gpuSim.(ekhos.vkSimulator))
 
