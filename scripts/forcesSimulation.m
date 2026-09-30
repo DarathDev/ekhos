@@ -233,7 +233,7 @@ if plotting
     imagesc(imageX * 1e3, imageZ * 1e3, fieldIIImageDb');
     axis image;
     clim([-40, 0]);
-    title("FORCES - Field II");
+    title("Field II");
     xlabel("x (mm), dB");
     ylabel("z (mm)");
     colorbar('westoutside');
@@ -243,7 +243,7 @@ if plotting
     imagesc(imageX * 1e3, imageZ * 1e3, vkImageDb');
     axis image;
     clim([-40, 0]);
-    title("FORCES - Ekhos");
+    title("Ekhos");
     xlabel("x (mm), dB");
     set(gca, 'YColor', 'none');
     colorbar;

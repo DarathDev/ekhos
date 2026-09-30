@@ -710,13 +710,7 @@ simulate_vulkan :: proc(
 	scatterBatchSize := simulator.info.scattererBatchSize
 	dataBufferAddress := ekhos_vk.get_buffer_address(device, resources.dataBuffer.main)
 	header := resources.dataBufferHeader
-	scatterWindowSize := max(
-		1,
-		min(
-			len(scatters),
-			int(scatterBatchSize) * SCATTER_BATCHES_PER_COMMAND_BUFFER * SCATTER_PROGRESS_COMMANDS_PER_WINDOW,
-		),
-	)
+	scatterWindowSize := max(1, min(len(scatters), int(scatterBatchSize) * SCATTER_BATCHES_PER_COMMAND_BUFFER * SCATTER_PROGRESS_COMMANDS_PER_WINDOW))
 	totalScatterCommands := 0
 	for progressWindowOffset := 0; progressWindowOffset < len(scatters); progressWindowOffset += scatterWindowSize {
 		progressWindowEnd := min(progressWindowOffset + scatterWindowSize, len(scatters))
@@ -752,15 +746,17 @@ simulate_vulkan :: proc(
 			ekhos_vk.cmd_pipeline_barrier(
 				commandBuffer,
 				{},
-				{{
-					buffer = scatterBuffer.buffer,
-					size = scatterBuffer.size,
-					offset = 0,
-					srcStageMask = {.HOST},
-					srcAccessMask = {.HOST_WRITE},
-					dstStageMask = {.COMPUTE_SHADER},
-					dstAccessMask = {.SHADER_READ},
-				}},
+				{
+					{
+						buffer = scatterBuffer.buffer,
+						size = scatterBuffer.size,
+						offset = 0,
+						srcStageMask = {.HOST},
+						srcAccessMask = {.HOST_WRITE},
+						dstStageMask = {.COMPUTE_SHADER},
+						dstAccessMask = {.SHADER_READ},
+					},
+				},
 				{},
 			)
 			if hasTransferQueue {
@@ -1051,15 +1047,40 @@ log_gpu_timing :: proc(timing: GpuTiming, label: string, loc := #caller_location
 			totalDispatchCount += stage.dispatches
 		}
 		log.infof("%s planning stage: %v", label, timing.planning, location = loc)
-		log.infof("%s Vulkan GPU timing table:", label, location = loc)
-		log.info("stage                         dispatches   total       average", location = loc)
-		log.infof("calculate aperture            %10d   %v      %v", timing.stages[0].dispatches, timing.stages[0].total, timing.stages[0].dispatches > 0 ? timing.stages[0].total / time.Duration(timing.stages[0].dispatches) : 0, location = loc)
-		log.infof("measure aperture              %10d   %v      %v", timing.stages[1].dispatches, timing.stages[1].total, timing.stages[1].dispatches > 0 ? timing.stages[1].total / time.Duration(timing.stages[1].dispatches) : 0, location = loc)
-		log.infof("coalesce aperture             %10d   %v      %v", timing.stages[2].dispatches, timing.stages[2].total, timing.stages[2].dispatches > 0 ? timing.stages[2].total / time.Duration(timing.stages[2].dispatches) : 0, location = loc)
-		log.infof("pulse echo convolution        %10d   %v      %v", timing.stages[3].dispatches, timing.stages[3].total, timing.stages[3].dispatches > 0 ? timing.stages[3].total / time.Duration(timing.stages[3].dispatches) : 0, location = loc)
-		log.infof("temporal response             %10d   %v      %v", timing.stages[4].dispatches, timing.stages[4].total, timing.stages[4].dispatches > 0 ? timing.stages[4].total / time.Duration(timing.stages[4].dispatches) : 0, location = loc)
-		log.infof("readback                      %10d   %v      %v", timing.stages[5].dispatches, timing.stages[5].total, timing.stages[5].dispatches > 0 ? timing.stages[5].total / time.Duration(timing.stages[5].dispatches) : 0, location = loc)
-		log.infof("total                         %10d   %v      %v", totalDispatchCount, totalDuration, totalDispatchCount > 0 ? totalDuration / time.Duration(totalDispatchCount) : 0, location = loc)
+		log.infof(
+			`%s Vulkan GPU timing table:
+stage                         dispatches   total       average
+calculate aperture            %10d   %v      %v
+measure aperture              %10d   %v      %v
+coalesce aperture             %10d   %v      %v
+pulse echo convolution        %10d   %v      %v
+temporal response             %10d   %v      %v
+readback                      %10d   %v      %v
+total                         %10d   %v      %v`,
+			label,
+			timing.stages[0].dispatches,
+			timing.stages[0].total,
+			timing.stages[0].dispatches > 0 ? timing.stages[0].total / time.Duration(timing.stages[0].dispatches) : 0,
+			timing.stages[1].dispatches,
+			timing.stages[1].total,
+			timing.stages[1].dispatches > 0 ? timing.stages[1].total / time.Duration(timing.stages[1].dispatches) : 0,
+			timing.stages[2].dispatches,
+			timing.stages[2].total,
+			timing.stages[2].dispatches > 0 ? timing.stages[2].total / time.Duration(timing.stages[2].dispatches) : 0,
+			timing.stages[3].dispatches,
+			timing.stages[3].total,
+			timing.stages[3].dispatches > 0 ? timing.stages[3].total / time.Duration(timing.stages[3].dispatches) : 0,
+			timing.stages[4].dispatches,
+			timing.stages[4].total,
+			timing.stages[4].dispatches > 0 ? timing.stages[4].total / time.Duration(timing.stages[4].dispatches) : 0,
+			timing.stages[5].dispatches,
+			timing.stages[5].total,
+			timing.stages[5].dispatches > 0 ? timing.stages[5].total / time.Duration(timing.stages[5].dispatches) : 0,
+			totalDispatchCount,
+			totalDuration,
+			totalDispatchCount > 0 ? totalDuration / time.Duration(totalDispatchCount) : 0,
+			location = loc,
+		)
 	}
 }
 
