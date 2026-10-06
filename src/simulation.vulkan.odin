@@ -451,26 +451,6 @@ plan_vulkan_simulator :: proc(
 		simulator.info.scattererBatchSize = targetBatchSize
 	}
 
-	log.infof(
-		"Vulkan scatter batch plan: scatters=%d, elements=%d, transmissions=%d, receiveChannels=%d, apertureSamples=%d, " +
-		"sharedMemory=%M/%M bytes, fixedBuffer=%M bytes, bytesPerScatterer=%M, bufferLimit=%M bytes, " +
-		"physicalStorageLimit=%M bytes, bufferBatchLimit=%d, targetBatch=%d, finalBatch=%d",
-		scatterCount,
-		elementCount,
-		transmissionCount,
-		receiveChannelCount,
-		apertureSampleCount,
-		pulseEchoSharedMemory,
-		maxComputeSharedMemorySize,
-		fixedHeaderBytes,
-		bytesPerScatterer,
-		effectiveBufferLimit,
-		maxStorageBufferRange,
-		maxBatchFromBuffer,
-		targetBatchSize,
-		simulator.info.scattererBatchSize,
-	)
-
 	dataBufferHeader := calculate_vk_data_buffer_offsets(
 		elementCount,
 		simulator.info.scattererBatchSize,
