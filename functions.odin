@@ -37,6 +37,12 @@ run_cmd :: proc(cmd: []string, working_dir: string = "", broadcast := true) -> (
 	return
 }
 
+get_git_hash :: proc() -> string {
+	state, stdout, _, err := os.process_exec({command = {GIT_CMD, "rev-parse", "--short", "HEAD"}}, context.allocator)
+	if err != nil || state.exit_code != 0 do return "unknown"
+	return strings.trim_right_space(string(stdout))
+}
+
 when ODIN_OS == .Windows {
 	CheckCommand: []string = {"powershell", "-Command", "Get-Command", "cmd", "-ErrorAction", "SilentlyContinue", "|", "Out-Null"}
 	CheckCommandPlaceholderIndex: int = 3

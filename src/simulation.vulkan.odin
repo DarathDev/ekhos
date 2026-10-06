@@ -1028,7 +1028,7 @@ log_gpu_timing :: proc(timing: GpuTiming, label: string, loc := #caller_location
 		}
 		log.infof("%s planning stage: %v", label, timing.planning, location = loc)
 		log.infof(
-			`%s Vulkan GPU timing table:
+			`%s Vulkan GPU timing table (%s):
 stage                         dispatches   total       average
 calculate aperture            %10d   %v      %v
 measure aperture              %10d   %v      %v
@@ -1038,6 +1038,7 @@ temporal response             %10d   %v      %v
 readback                      %10d   %v      %v
 total                         %10d   %v      %v`,
 			label,
+			GIT_HASH,
 			timing.stages[0].dispatches,
 			timing.stages[0].total,
 			timing.stages[0].dispatches > 0 ? timing.stages[0].total / time.Duration(timing.stages[0].dispatches) : 0,

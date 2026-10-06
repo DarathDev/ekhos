@@ -141,6 +141,8 @@ main :: proc() {
 	if len(EKHOS_BUILD_TYPE) == 0 {
 		EKHOS_BUILD_TYPE = EKHOS_DEFAULT_BUILD_TYPE
 	}
+	gitHash := get_git_hash()
+	append(&options, OdinBuildOption{flag = "define", value = {fmt.aprintf("GIT_HASH=%s", gitHash)}})
 	if len(EKHOS_OUTPUT_SUBDIR) == 0 {
 		switch EKHOS_BUILD_MODE {
 		case "release":

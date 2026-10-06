@@ -198,7 +198,7 @@ log_cpu_timing :: proc(timing: CpuTiming, label: string, loc := #caller_location
 		log.infof("%s planning stage: %v", label, timing.planning, location = loc)
 		log.infof(
 			`
-%s CPU stage timing table:
+%s CPU stage timing table (%s):
 stage                         total                 percent
 allocation                    %16v                %.1f%%
 element responses             %16v                %.1f%%
@@ -208,6 +208,7 @@ convolution                   %16v                %.1f%%
 temporal response             %16v                %.1f%%
 total                         %16v                100.0%%`,
 			label,
+			GIT_HASH,
 			timing.stages.allocation,
 			timing.simulation > 0 ? 100 * f64(timing.stages.allocation) / f64(timing.simulation) : 0,
 			timing.stages.elementResponses,

@@ -22,6 +22,7 @@ assume :: utility.assume
 
 ENABLE_RENDERDOC :: bool(#config(ENABLE_RENDERDOC, true))
 PLAN_STAGE_TIMING :: bool(#config(PLAN_STAGE_TIMING, false))
+GIT_HASH :: #config(GIT_HASH, "unknown")
 
 PULSE_CONV_SAMPLE_WORKGROUP_SIZE :: 64
 PULSE_CONVOLUTION_TILE_SIZE :: 256
