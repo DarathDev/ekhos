@@ -9,6 +9,11 @@ While it can perform simulations for arbitrary sets of rectangular and triangula
 - [Odin](https://github.com/odin-lang/Odin)
 - [Slang](https://github.com/shader-slang/slang)
 
+## License
+
+Ekhos is licensed under the [Mozilla Public License 2.0](LICENSE-MPL-2.0.txt).
+Licenses for bundled third-party dependencies are in the `license/` directory.
+
 ### Optional
 
 - [MATLAB](https://www.mathworks.com/products/matlab.html)
