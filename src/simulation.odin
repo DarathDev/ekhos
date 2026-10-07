@@ -246,6 +246,7 @@ plan_simulation :: proc(
 	settings.sampleCount = (settings.sampleCount + 31) & ~i32(31)
 
 	scattererBatchSize: u32 = max(u32(1), min(u32(len(scatters)), u32(256)))
+	cpuScattererBatchSize: u32 = max(u32(1), min(u32(len(scatters)), CPU_SCATTER_BATCH_SIZE))
 
 	switch &sim in simulator {
 	case vkSimulator:
@@ -254,7 +255,7 @@ plan_simulation :: proc(
 		is_ok(check(plan_vulkan_simulator(&sim, settings^, transmissions, receiveChannels, elements, scatters, impulses, excitations))) or_return
 	case cpuSimulator:
 		sim.info.apertureSampleCount = apertureSampleCount
-		sim.info.scattererBatchSize = scattererBatchSize
+		sim.info.scattererBatchSize = cpuScattererBatchSize
 		check(plan_cpu_simulation(&sim, settings)) or_return
 	case hybridSimulator:
 		assert(
@@ -262,7 +263,7 @@ plan_simulation :: proc(
 			"Hybrid CPU scatter fraction must be in [0, 1]",
 		)
 		sim.cpu.info.apertureSampleCount = apertureSampleCount
-		sim.cpu.info.scattererBatchSize = scattererBatchSize
+		sim.cpu.info.scattererBatchSize = cpuScattererBatchSize
 		sim.gpu.info.apertureSampleCount = apertureSampleCount
 		sim.gpu.info.scattererBatchSize = scattererBatchSize
 		check(plan_cpu_simulation(&sim.cpu, settings)) or_return
