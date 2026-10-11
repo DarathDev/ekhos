@@ -1,6 +1,8 @@
 package ekhos
 
+import "base:builtin"
 import "base:intrinsics"
+import "base:runtime"
 import "core:log"
 import "core:math/linalg"
 import "core:mem"
@@ -154,6 +156,9 @@ SCATTER_BATCH_SIZE :: 128
 CPU_SCATTER_BATCH_SIZE :: 4096
 CPU_WORK_CHUNK_SIZE :: 1
 SCATTER_WORK_CHUNK_SIZE :: 8
+CPU_PREFETCH_BYTES :: 64
+CPU_SCATTER_PREFETCH_DISTANCE :: max(1, CPU_PREFETCH_BYTES / size_of(Scatter))
+CPU_ELEMENT_SET_PREFETCH_DISTANCE :: max(1, CPU_PREFETCH_BYTES / size_of(ElementSetMember))
 PROGRESS_LOG_DELAY_THRESHOLD :: 20.0 * time.Second
 PROGRESS_LOG_INTERVAL :: 20.0 * time.Second
 CPU_STAGE_TIMING :: bool(#config(CPU_STAGE_TIMING, false))
@@ -254,6 +259,10 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 		return
 	}
 
+	dataLineBytes := max(1, int(sampleCount)) * size_of(intrinsics.type_elem_type([]f32))
+	dataLinePrefetchDistance: i32 = auto_cast max(1, CPU_PREFETCH_BYTES / dataLineBytes)
+	transmissionDataPrefetchDistance: i32 = auto_cast max(1, CPU_PREFETCH_BYTES / (int(receiveChannelCount) * dataLineBytes))
+
 	totalDatalineScatters := i64(scatterCount) * i64(transmissionCount) * i64(receiveChannelCount)
 	completedDatalineScatters: i64 = 0
 
@@ -334,6 +343,9 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 			if !found do break
 			for scatterBatchIndex := workStart; scatterBatchIndex < workEnd; scatterBatchIndex += 1 {
 				scatterIndex := scatterBatchStart + scatterBatchIndex
+				if scatterIndex + CPU_SCATTER_PREFETCH_DISTANCE < scatterBatchEnd {
+					intrinsics.prefetch_read_data(rawptr(&scatters[scatterIndex + CPU_SCATTER_PREFETCH_DISTANCE]), 3)
+				}
 				scatter := scatters[scatterIndex]
 				scatterElementImpulses := elementImpulses[scatterBatchIndex * auto_cast len(elements):][:len(elements)]
 				for element, elementIndex in elements {
@@ -349,7 +361,16 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 			workStart, workEnd, found := cpu_work_counter_claim(dataLineWorkCounter, transmissionCount, CPU_WORK_CHUNK_SIZE)
 			if !found do break
 			for transmissionIndex := workStart; transmissionIndex < workEnd; transmissionIndex += 1 {
+				if transmissionIndex + transmissionDataPrefetchDistance < transmissionCount {
+					intrinsics.prefetch_write_data(
+						rawptr(&data[(transmissionIndex + transmissionDataPrefetchDistance) * receiveChannelCount * sampleCount]),
+						3,
+					)
+				}
 				for scatterIndex := scatterBatchStart; scatterIndex < scatterBatchEnd; scatterIndex += 1 {
+					if scatterIndex + CPU_SCATTER_PREFETCH_DISTANCE < scatterBatchEnd {
+						intrinsics.prefetch_read_data(rawptr(&scatters[scatterIndex + CPU_SCATTER_PREFETCH_DISTANCE]), 3)
+					}
 					localScatterIndex := scatterIndex - scatterBatchStart
 					scatterData[0] = {
 						scatter = scatters[scatterIndex],
@@ -375,6 +396,12 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 					scatterData[0].transmissionImpulses = transmissionImpulse
 					transmissionSampleCount := sample_range_sample_count(transmissionSampleRanges[0])
 					for receiveChannelIndex in 0 ..< receiveChannelCount {
+						if receiveChannelIndex + dataLinePrefetchDistance < receiveChannelCount {
+							intrinsics.prefetch_write_data(
+								rawptr(&data[(receiveChannelIndex + dataLinePrefetchDistance + transmissionIndex * receiveChannelCount) * sampleCount]),
+								3,
+							)
+						}
 						dataLine := data[(receiveChannelIndex + transmissionIndex * receiveChannelCount) * sampleCount:]
 						when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 						coalesce_impulses(
@@ -482,7 +509,13 @@ coalesce_impulses :: proc(
 			utility.prof_scoped("Scatterer Impulse")
 			utility.prof_begin("Precalculations")
 			elementSetSampleRange: SampleRange = {max(i32), min(i32)}
-			for element in elementSet.elements {
+			for element, elementIndex in elementSet.elements {
+				if elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE < len(elementSet.elements) {
+					intrinsics.prefetch_read_data(
+						rawptr(&scatterElementImpulses[elementSet.elements[elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE].index]),
+						3,
+					)
+				}
 				elementImpulse := scatterElementImpulses[element.index]
 				elementImpulse.rect += element.delay * samplingFrequency
 
@@ -500,7 +533,13 @@ coalesce_impulses :: proc(
 			slice.zero(elementSetImpulse)
 			utility.prof_end()
 			utility.prof_begin("Sampling")
-			for element in elementSet.elements {
+			for element, elementIndex in elementSet.elements {
+				if elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE < len(elementSet.elements) {
+					intrinsics.prefetch_read_data(
+						rawptr(&scatterElementImpulses[elementSet.elements[elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE].index]),
+						3,
+					)
+				}
 				elementImpulse := scatterElementImpulses[element.index]
 				elementImpulse.rect += element.delay * samplingFrequency
 				elementImpulse.scale *= element.apodization
@@ -601,6 +640,8 @@ convolve_frequency_domain :: proc(sampleCount: i32, scatters: []CpuScatterData, 
 
 	maxFftCount: i32
 	for scatterData in scatters {
+		intrinsics.prefetch_read_data(rawptr(&scatterData.transmissionImpulses[0]), 3)
+		intrinsics.prefetch_read_data(rawptr(&scatterData.receiveChannelImpulses[0]), 3)
 		maxFftCount = max(maxFftCount, scatterData.fftCount)
 	}
 
