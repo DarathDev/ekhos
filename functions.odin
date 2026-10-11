@@ -37,6 +37,24 @@ run_cmd :: proc(cmd: []string, working_dir: string = "", broadcast := true) -> (
 	return
 }
 
+run_cmd_capture :: proc(cmd: []string, working_dir: string = "", broadcast := true) -> (exit_code: int, stdout, stderr: []byte, ok := true) {
+	if broadcast do build_log(os.stdout, .Command, strings.join(cmd, " "))
+	state, captured_stdout, captured_stderr, err := os.process_exec({command = cmd, working_dir = working_dir}, context.allocator)
+	if err != nil {
+		ok = false
+		return
+	}
+	exit_code = state.exit_code
+	stdout = captured_stdout
+	stderr = captured_stderr
+	if len(stdout) > 0 do build_log(os.stdout, .Info, strings.trim_right_space(string(stdout)))
+	if len(stderr) > 0 do build_log(os.stderr, .Error, strings.trim_right_space(string(stderr)))
+	if exit_code != 0 {
+		build_log(os.stderr, .Error, fmt.tprintf("Command exited with code %d: %s", exit_code, strings.join(cmd, " ")))
+	}
+	return
+}
+
 get_git_hash :: proc() -> string {
 	state, stdout, _, err := os.process_exec({command = {GIT_CMD, "rev-parse", "--short", "HEAD"}}, context.allocator)
 	if err != nil || state.exit_code != 0 do return "unknown"

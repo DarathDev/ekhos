@@ -4,6 +4,7 @@ import "base:runtime"
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:strings"
 import si "core:sys/info"
 import util "src/utility"
 
@@ -250,7 +251,24 @@ build_test :: proc(options: ^[dynamic]OdinBuildOption) -> (ok := true) {
 	odinCmd := make([dynamic]string)
 	append(&odinCmd, ODIN_CMD, ODIN_BUILD_ARG, EKHOS_TEST_DIR)
 	append(&odinCmd, ..odin_options_to_args(options[:]))
-	assert(assert(run_cmd(odinCmd[:])) == 0)
+	exit_code, stdout, stderr, command_ok := run_cmd_capture(odinCmd[:])
+	when ODIN_OS == .Windows {
+		error_text := strings.to_lower(string(stderr))
+		output_text := strings.to_lower(string(stdout))
+		if exit_code != 0 &&
+		   (strings.contains(error_text, "lock") ||
+				   strings.contains(error_text, "being used by another process") ||
+				   strings.contains(output_text, "lock") ||
+				   strings.contains(output_text, "being used by another process")) {
+			run_cmd({"taskkill", "/F", "/IM", binaryName, "/T"}, broadcast = false)
+			if os.is_file(binaryOutPath) {
+				assert(os.remove(binaryOutPath), fmt.aprintf("Could not remove existing test executable %s", binaryOutPath))
+			}
+			exit_code, _, _, command_ok = run_cmd_capture(odinCmd[:])
+		}
+	}
+	assert(command_ok)
+	assert(exit_code == 0)
 	return
 }
 
