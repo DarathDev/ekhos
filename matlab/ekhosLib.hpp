@@ -85,16 +85,15 @@ typedef struct {
 typedef struct {
 	f32 position[3];
 	f32 padding0;
-	f32 normal[3];
-	f32 padding1;
+	f32 orientation[4];
 	f32 size[2];
-	f32 padding2[2];
+	f32 padding1[2];
 } RectangularElement;
 
 
 typedef struct {
 	f32* position;
-	f32* normal;
+	f32* orientation;
 	f32* size;
 	f32* apodization;
 	f32* delay;

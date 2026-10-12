@@ -48,7 +48,7 @@ fieldII.xdc_apodization(rTh, 0, ones(1, columnCount));
 elementCount = 2 * columnCount;
 elementPositions = zeros(3, elementCount, 'single');
 elementPositions(1, :) = single(repmat(((0:columnCount-1) - (columnCount-1)/2) * elementPitch, 1, 2));
-elementNormals = repmat(single([0; 0; 1]), 1, elementCount);
+elementOrientations = repmat(single([0; 0; 0; 1]), 1, elementCount);
 elementSizes = repmat(single([dieWidth; dieWidth]), 1, elementCount);
 elementApodizations = ones(1, elementCount, 'single');
 elementDelays = zeros(1, elementCount, 'single');
@@ -94,7 +94,7 @@ for resultIndex = 1:numel(scatterCounts)
         simulation.Elements = ekhos.RectangularElementSet();
         simulation.Elements.Count = uint32(elementCount);
         simulation.Elements.Positions = elementPositions;
-        simulation.Elements.Normals = elementNormals;
+        simulation.Elements.Orientations = elementOrientations;
         simulation.Elements.Sizes = elementSizes;
         simulation.Elements.Apodizations = elementApodizations;
         simulation.Elements.Delays = elementDelays;

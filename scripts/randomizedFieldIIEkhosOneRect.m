@@ -41,8 +41,8 @@ results = repmat(struct( ...
     'scatterPosition', zeros(3, 1), ...
     'transmitPosition', zeros(3, 1), ...
     'receivePosition', zeros(3, 1), ...
-    'transmitEuler', zeros(3, 1), ...
-    'receiveEuler', zeros(3, 1), ...
+    'transmitOrientation', zeros(4, 1), ...
+    'receiveOrientation', zeros(4, 1), ...
     'fieldCpuRmsErrorPercent', 0, ...
     'rawFieldCpuRmsErrorPercent', 0, ...
     'compareTimes', [], ...
@@ -59,21 +59,21 @@ for caseIndex = 1:caseCount
     if originApertures
         transmitPosition = [0; 0; 0];
         receivePosition = [0; 0; 0];
-        transmitEuler = [0; 0; 0];
-        receiveEuler = [0; 0; 0];
+        transmitOrientation = [0; 0; 0; 1];
+        receiveOrientation = [0; 0; 0; 1];
     else
         transmitPosition = random_position([-5e-3; -5e-3; -2e-3], [5e-3; 5e-3; 2e-3]);
         receivePosition = random_position([-5e-3; -5e-3; -2e-3], [5e-3; 5e-3; 2e-3]);
-        transmitEuler = [rand_range(-pi, pi); rand_range(-pi / 9, pi / 9); rand_range(-pi / 9, pi / 9)];
-        receiveEuler = [rand_range(-pi, pi); rand_range(-pi / 9, pi / 9); rand_range(-pi / 9, pi / 9)];
+        transmitOrientation = randomQuaternion();
+        receiveOrientation = randomQuaternion();
     end
-    transmitFrame = make_frame(transmitEuler);
-    receiveFrame = make_frame(receiveEuler);
+    transmitFrame = quaternionToFrame(transmitOrientation);
+    receiveFrame = quaternionToFrame(receiveOrientation);
 
     fprintf(['case=%d scatter=[%.3f %.3f %.3f] mm tx=[%.4g %.4g %.4g] ', ...
-        'rx=[%.4g %.4g %.4g] txEuler=[%.4g %.4g %.4g] ', ...
-        'rxEuler=[%.4g %.4g %.4g]\n'], caseIndex, scatterPosition * 1e3, ...
-        transmitPosition, receivePosition, transmitEuler, receiveEuler);
+        'rx=[%.4g %.4g %.4g] txQuat=[%.4g %.4g %.4g %.4g] ', ...
+        'rxQuat=[%.4g %.4g %.4g %.4g]\n'], caseIndex, scatterPosition * 1e3, ...
+        transmitPosition, receivePosition, transmitOrientation, receiveOrientation);
 
     if originApertures
         transmitAperture = fieldII.xdc_2d_array(1, 1, rectangleSize(1), rectangleSize(2), 3e-5, 3e-5, 1, 1, 1, [0, 0, 1e10]);
@@ -102,18 +102,18 @@ for caseIndex = 1:caseCount
     fieldTimes = fieldStartTime + (0:size(fieldData, 1) - 1) / fs;
 
     elementPositions = single([transmitPosition, receivePosition]);
-    elementNormals = single([transmitFrame(:, 3), receiveFrame(:, 3)]);
+    elementOrientations = single([transmitOrientation, receiveOrientation]);
     elementSizes = single(repmat(rectangleSize, 1, 2));
     elementApodizations = single([1, 1]);
     elementDelays = single([0, 0]);
 
-    [cpuData, cpuStartTime] = run_ekhos(ekhos.SimulatorType.CPU, elementPositions, elementNormals, elementSizes, ...
+    [cpuData, cpuStartTime] = run_ekhos(ekhos.SimulatorType.CPU, elementPositions, elementOrientations, elementSizes, ...
         elementApodizations, elementDelays, scatterPosition, fs, c, impulseResponse, excitation);
-    [gpuData, gpuStartTime] = run_ekhos(ekhos.SimulatorType.GPU, elementPositions, elementNormals, elementSizes, ...
+    [gpuData, gpuStartTime] = run_ekhos(ekhos.SimulatorType.GPU, elementPositions, elementOrientations, elementSizes, ...
         elementApodizations, elementDelays, scatterPosition, fs, c, impulseResponse, excitation);
-    [rawCpuData, rawCpuStartTime] = run_ekhos(ekhos.SimulatorType.CPU, elementPositions, elementNormals, elementSizes, ...
+    [rawCpuData, rawCpuStartTime] = run_ekhos(ekhos.SimulatorType.CPU, elementPositions, elementOrientations, elementSizes, ...
         elementApodizations, elementDelays, scatterPosition, fs, c, rawImpulseResponse, rawExcitation);
-    [rawGpuData, rawGpuStartTime] = run_ekhos(ekhos.SimulatorType.GPU, elementPositions, elementNormals, elementSizes, ...
+    [rawGpuData, rawGpuStartTime] = run_ekhos(ekhos.SimulatorType.GPU, elementPositions, elementOrientations, elementSizes, ...
         elementApodizations, elementDelays, scatterPosition, fs, c, rawImpulseResponse, rawExcitation);
 
     [fieldAligned, cpuAligned, gpuAligned, compareTimes] = align_signals(...
@@ -132,8 +132,8 @@ for caseIndex = 1:caseCount
     results(caseIndex).scatterPosition = scatterPosition;
     results(caseIndex).transmitPosition = transmitPosition;
     results(caseIndex).receivePosition = receivePosition;
-    results(caseIndex).transmitEuler = transmitEuler;
-    results(caseIndex).receiveEuler = receiveEuler;
+    results(caseIndex).transmitOrientation = transmitOrientation;
+    results(caseIndex).receiveOrientation = receiveOrientation;
     results(caseIndex).cpuGpuMaxRelativeDifference = cpuGpuMetrics.maxRelativeDifference;
     results(caseIndex).fieldCpuRmsErrorPercent = fieldCpuMetrics.rmsErrorPercent;
     results(caseIndex).rawFieldCpuRmsErrorPercent = rawFieldCpuMetrics.rmsErrorPercent;
@@ -157,7 +157,7 @@ for caseIndex = 1:caseCount
 
     if plotting && fieldCpuMetrics.correlation < plotCorrelationThreshold
         plot_case(compareTimes, fieldAligned, cpuAligned, gpuAligned, caseIndex, scatterPosition, ...
-            transmitPosition, receivePosition, transmitEuler, receiveEuler);
+            transmitPosition, receivePosition, transmitOrientation, receiveOrientation);
     end
 
 end
@@ -174,28 +174,28 @@ summaryPlotHandles = plot_case(results(bestCaseIndex).rawCompareTimes, results(b
     results(bestCaseIndex).rawCpuAligned, results(bestCaseIndex).rawGpuAligned, ...
     results(bestCaseIndex).caseIndex, results(bestCaseIndex).scatterPosition, ...
     results(bestCaseIndex).transmitPosition, results(bestCaseIndex).receivePosition, ...
-    results(bestCaseIndex).transmitEuler, results(bestCaseIndex).receiveEuler, ...
+    results(bestCaseIndex).transmitOrientation, results(bestCaseIndex).receiveOrientation, ...
     bestCaseAxes, 'Best case');
 worstCaseAxes = nexttile(summaryLayout);
 plot_case(results(worstCaseIndex).rawCompareTimes, results(worstCaseIndex).rawFieldAligned, ...
     results(worstCaseIndex).rawCpuAligned, results(worstCaseIndex).rawGpuAligned, ...
     results(worstCaseIndex).caseIndex, results(worstCaseIndex).scatterPosition, ...
     results(worstCaseIndex).transmitPosition, results(worstCaseIndex).receivePosition, ...
-    results(worstCaseIndex).transmitEuler, results(worstCaseIndex).receiveEuler, ...
+    results(worstCaseIndex).transmitOrientation, results(worstCaseIndex).receiveOrientation, ...
     worstCaseAxes, 'Worst case');
 worstCaseAxes.YAxisLocation = 'right';
 plot_case(results(bestCaseIndex).compareTimes, results(bestCaseIndex).fieldAligned, ...
     results(bestCaseIndex).cpuAligned, results(bestCaseIndex).gpuAligned, ...
     results(bestCaseIndex).caseIndex, results(bestCaseIndex).scatterPosition, ...
     results(bestCaseIndex).transmitPosition, results(bestCaseIndex).receivePosition, ...
-    results(bestCaseIndex).transmitEuler, results(bestCaseIndex).receiveEuler, ...
+    results(bestCaseIndex).transmitOrientation, results(bestCaseIndex).receiveOrientation, ...
     nexttile(summaryLayout), 'Best case (Convolved with temporal response)');
 convolvedWorstCaseAxes = nexttile(summaryLayout);
 plot_case(results(worstCaseIndex).compareTimes, results(worstCaseIndex).fieldAligned, ...
     results(worstCaseIndex).cpuAligned, results(worstCaseIndex).gpuAligned, ...
     results(worstCaseIndex).caseIndex, results(worstCaseIndex).scatterPosition, ...
     results(worstCaseIndex).transmitPosition, results(worstCaseIndex).receivePosition, ...
-    results(worstCaseIndex).transmitEuler, results(worstCaseIndex).receiveEuler, ...
+    results(worstCaseIndex).transmitOrientation, results(worstCaseIndex).receiveOrientation, ...
     convolvedWorstCaseAxes, 'Worst case (Convolved with temporal response)');
 convolvedWorstCaseAxes.YAxisLocation = 'right';
 summaryLegend = legend(bestCaseAxes, summaryPlotHandles, {'Field II', 'Ekhos CPU', 'Ekhos GPU'}, ...
@@ -239,7 +239,7 @@ colorbarHandle = colorbar;
 ylabel(colorbarHandle, 'RMS error (%)');
 end
 
-function [data, startTime] = run_ekhos(simulatorType, positions, normals, sizes, apodizations, delays, scatterPosition, fs, c, impulseResponse, excitation)
+function [data, startTime] = run_ekhos(simulatorType, positions, orientations, sizes, apodizations, delays, scatterPosition, fs, c, impulseResponse, excitation)
 simulation = ekhos.Simulation();
 simulation.SimulatorType = simulatorType;
 simulation.Cumulative = true;
@@ -251,7 +251,7 @@ simulation.Excitations = {single(excitation)};
 simulation.Elements = ekhos.RectangularElementSet();
 simulation.Elements.Count = uint32(2);
 simulation.Elements.Positions = positions;
-simulation.Elements.Normals = normals;
+simulation.Elements.Orientations = orientations;
 simulation.Elements.Sizes = sizes;
 simulation.Elements.Apodizations = apodizations;
 simulation.Elements.Delays = delays;
@@ -295,23 +295,27 @@ rectangle = [1, reshape(corners', 1, []), 1, size(1), size(2), position'];
 rectangle = fieldII.xdc_rectangles(rectangle, position', [0, 0, 1e10]);
 end
 
-function frame = make_frame(euler)
-% Intrinsic roll, pitch, yaw frame; columns are local width, height, normal.
-roll = euler(1);
-pitch = euler(2);
-yaw = euler(3);
-rx = [1, 0, 0; 0, cos(roll), -sin(roll); 0, sin(roll), cos(roll)];
-ry = [cos(pitch), 0, sin(pitch); 0, 1, 0; -sin(pitch), 0, cos(pitch)];
-rz = [cos(yaw), -sin(yaw), 0; sin(yaw), cos(yaw), 0; 0, 0, 1];
-frame = rz * ry * rx;
+function quaternion = randomQuaternion()
+uniformValues = rand(3, 1);
+quaternion = [sqrt(1 - uniformValues(1)) * sin(2 * pi * uniformValues(2));
+              sqrt(1 - uniformValues(1)) * cos(2 * pi * uniformValues(2));
+              sqrt(uniformValues(1)) * sin(2 * pi * uniformValues(3));
+              sqrt(uniformValues(1)) * cos(2 * pi * uniformValues(3))];
+end
+
+function frame = quaternionToFrame(quaternion)
+axis = quaternion(1:3);
+w = quaternion(4);
+frame = [rotateVector([1; 0; 0]), rotateVector([0; 1; 0]), rotateVector([0; 0; 1])];
+
+    function rotated = rotateVector(vector)
+        t = 2 * cross(axis, vector);
+        rotated = vector + w * t + cross(axis, t);
+    end
 end
 
 function position = random_position(lower, upper)
 position = lower + rand(3, 1) .* (upper - lower);
-end
-
-function value = rand_range(lower, upper)
-value = lower + rand() * (upper - lower);
 end
 
 function filtered = applyResponseFilters(data, impulseResponse, excitation, dt)
@@ -371,7 +375,7 @@ cpuAligned = interp1(cpuStartTime + (0:size(cpuData, 1) - 1) / fs, cpuData, time
 gpuAligned = interp1(gpuStartTime + (0:size(gpuData, 1) - 1) / fs, gpuData, times, 'linear', 0);
 end
 
-function plotHandles = plot_case(times, fieldData, cpuData, gpuData, caseIndex, scatterPosition, transmitPosition, receivePosition, transmitEuler, receiveEuler, axesHandle, plotSubtitle)
+function plotHandles = plot_case(times, fieldData, cpuData, gpuData, caseIndex, scatterPosition, transmitPosition, receivePosition, transmitOrientation, receiveOrientation, axesHandle, plotSubtitle)
 times = times(:);
 fieldData = fieldData(:);
 cpuData = cpuData(:);

@@ -14,8 +14,8 @@ struct CalcAperPushData {
   uint elementOffset;
   uint scattererOffset;
 
-  float3 *getElementNormals() { return (float3 *)((uint64_t)elementPositions + (uint64_t)ElementCount * sizeof(float3)); }
-  float2 *getElementSizes() { return (float2 *)((uint64_t)getElementNormals() + (uint64_t)ElementCount * sizeof(float3)); }
+  float4 *getElementOrientations() { return (float4 *)((uint64_t)elementPositions + (uint64_t)ElementCount * sizeof(float3)); }
+  float2 *getElementSizes() { return (float2 *)((uint64_t)getElementOrientations() + (uint64_t)ElementCount * sizeof(float4)); }
   float *getElementApodizations() { return (float *)((uint64_t)getElementSizes() + (uint64_t)ElementCount * sizeof(float2)); }
   float *getElementDelays() { return (float *)((uint64_t)getElementApodizations() + (uint64_t)ElementCount * sizeof(float)); }
   float *getApertureResponseScales() {
@@ -39,7 +39,7 @@ void main(uint2 GlobalInvocationID: SV_DispatchThreadID, uint threadID: SV_Group
   Element element;
   uint elementInputIndex = elementIndex + pushData.elementOffset;
   element.position = pushData.elementPositions[elementInputIndex];
-  element.normal = pushData.getElementNormals()[elementInputIndex];
+  element.orientation = pushData.getElementOrientations()[elementInputIndex];
   element.size = pushData.getElementSizes()[elementInputIndex];
   element.apodization = pushData.getElementApodizations()[elementInputIndex];
   element.delay = pushData.getElementDelays()[elementInputIndex];
@@ -60,17 +60,9 @@ void main(uint2 GlobalInvocationID: SV_DispatchThreadID, uint threadID: SV_Group
 ApertureResponse compute_aperture_response(in Element element, in Scatterer scatterer) {
 
   float3 scattererRelativePosition = scatterer.position - element.position;
-  float3 rotationAxis = cross(element.normal, float3(0, 0, 1));
-  float rotationCosine = clamp(element.normal.z, -1.f, 1.f);
-  float rotationAxisLengthSquared = dot(rotationAxis, rotationAxis);
-  if (rotationAxisLengthSquared < EPSILON) {
-    if (rotationCosine < 0)
-      scattererRelativePosition = float3(-scattererRelativePosition.x, -scattererRelativePosition.y, scattererRelativePosition.z);
-  } else {
-    scattererRelativePosition =
-        rotationCosine * scattererRelativePosition + cross(rotationAxis, scattererRelativePosition) +
-        (1 - rotationCosine) / rotationAxisLengthSquared * rotationAxis * dot(rotationAxis, scattererRelativePosition);
-  }
+  float3 rotationAxis = -element.orientation.xyz;
+  float3 rotationT = 2.f * cross(rotationAxis, scattererRelativePosition);
+  scattererRelativePosition = scattererRelativePosition + element.orientation.w * rotationT + cross(rotationAxis, rotationT);
   float2 dieProjection = abs(element.size * scattererRelativePosition.xy);
   float distance = sqrt(dot(scattererRelativePosition, scattererRelativePosition));
 

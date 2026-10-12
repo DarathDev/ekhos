@@ -92,7 +92,7 @@ simulator.Excitations = {single(excitation)};
 simulator.Elements = ekhos.RectangularElementSet();
 simulator.Elements.Count = uint32(size(tData, 2) + size(rData, 2));
 simulator.Elements.Positions = single([tData(8:10, :), rData(8:10, :)]);
-simulator.Elements.Normals = single([tangentsToNormals(tData(8:10, :)), tangentsToNormals(rData(8:10, :))]);
+simulator.Elements.Orientations = single([tangentsToQuaternions(tData(8:10, :)), tangentsToQuaternions(rData(8:10, :))]);
 simulator.Elements.Sizes = single([tData(3:4, :), rData(3:4, :)]);
 simulator.Elements.Apodizations = single([tData(5, :), rData(5, :)]);
 simulator.Elements.Delays = single([tData(23, :), rData(23, :)]);
@@ -180,8 +180,3 @@ if plotting || video
     end
 end
 
-function normals = tangentsToNormals(tangents)
-normals = [tangents(2, :)./sqrt(1 + tangents(2, :).^2);
-    tangents(1, :)./sqrt(1 + tangents(1, :).^2);
-    sqrt(1 - (tangents(1, :).^2).*(tangents(2, :).^2))./sqrt(1 + tangents(1, :).^2)./sqrt(1 + tangents(2, :).^2)];
-end

@@ -2,7 +2,7 @@ simulation = ekhos.Simulation();
 
 simulation.Elements.Count = uint32(3);
 simulation.Elements.Positions = single([0, 0, 0; 0, 0, 1e-3; 0, 0, 2e-3]');
-simulation.Elements.Normals = single(repmat([0; 0; 1], 1, 3));
+simulation.Elements.Orientations = single(repmat([0; 0; 0; 1], 1, 3));
 simulation.Elements.Sizes = single(repmat([2.2e-4; 2.2e-4], 1, 3));
 simulation.Elements.Apodizations = single(ones(1, 3));
 simulation.Elements.Delays = single(zeros(1, 3));

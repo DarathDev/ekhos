@@ -769,19 +769,7 @@ get_spatial_impulse_response :: proc(
 	impulseResponse: ImpulseResponse,
 ) {
 	scatterPosition := scatter.position - element.position
-	rotationAxis := linalg.cross(element.normal, [3]f32{0, 0, 1})
-	rotationCosine := element.normal[2]
-	rotationAxisLengthSquared := linalg.dot(rotationAxis, rotationAxis)
-	if rotationAxisLengthSquared < linalg.F32_EPSILON {
-		if rotationCosine < 0 {
-			scatterPosition = [3]f32{-scatterPosition[0], scatterPosition[1], -scatterPosition[2]}
-		}
-	} else {
-		scatterPosition =
-			rotationCosine * scatterPosition +
-			linalg.cross(rotationAxis, scatterPosition) +
-			(1 - rotationCosine) / rotationAxisLengthSquared * rotationAxis * linalg.dot(rotationAxis, scatterPosition)
-	}
+	scatterPosition = linalg.mul(conj(transmute(quaternion128) element.orientation), scatterPosition)
 	dieProjection := linalg.abs(element.size * scatterPosition.xy)
 	distance := linalg.length(scatterPosition)
 

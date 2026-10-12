@@ -27,12 +27,12 @@ static void freeRectangularElementSoaSlice(RectangularElementSoaSlice* slice) {
 		return;
 	}
 	delete[ ] slice->position;
-	delete[ ] slice->normal;
+	delete[ ] slice->orientation;
 	delete[ ] slice->size;
 	delete[ ] slice->apodization;
 	delete[ ] slice->delay;
 	slice->position = nullptr;
-	slice->normal = nullptr;
+	slice->orientation = nullptr;
 	slice->size = nullptr;
 	slice->apodization = nullptr;
 	slice->delay = nullptr;
@@ -287,33 +287,33 @@ public:
 
 		Array mxCount = matlabPtr->getProperty(matlabArray, "Count");
 		Array mxPositions = matlabPtr->getProperty(matlabArray, "Positions");
-		Array mxNormals = matlabPtr->getProperty(matlabArray, "Normals");
+		Array mxOrientations = matlabPtr->getProperty(matlabArray, "Orientations");
 		Array mxSizes = matlabPtr->getProperty(matlabArray, "Sizes");
 		Array mxApodizations = matlabPtr->getProperty(matlabArray, "Apodizations");
 		Array mxDelays = matlabPtr->getProperty(matlabArray, "Delays");
 
 		const uz count = static_cast<uz>( mxCount[0] );
 		uz numelPositions = std::min(mxPositions.getNumberOfElements(), 3 * count);
-		uz numelNormals = std::min(mxNormals.getNumberOfElements(), 3 * count);
+		uz numelOrientations = std::min(mxOrientations.getNumberOfElements(), 4 * count);
 		uz numelSizes = std::min(mxSizes.getNumberOfElements(), 2 * count);
 		uz numelApodizations = std::min(mxApodizations.getNumberOfElements(), 1 * count);
 		uz numelDelays = std::min(mxDelays.getNumberOfElements(), 1 * count);
 
 		const f32* pPositions = getDataPtr<f32>(mxPositions);
-		const f32* pNormals = getDataPtr<f32>(mxNormals);
+		const f32* pOrientations = getDataPtr<f32>(mxOrientations);
 		const f32* pSizes = getDataPtr<f32>(mxSizes);
 		const f32* pApodizations = getDataPtr<f32>(mxApodizations);
 		const f32* pDelays = getDataPtr<f32>(mxDelays);
 
 		slice->position = new f32[numelPositions];
-		slice->normal = new f32[numelNormals];
+		slice->orientation = new f32[numelOrientations];
 		slice->size = new f32[numelSizes];
 		slice->apodization = new f32[numelApodizations];
 		slice->delay = new f32[numelDelays];
 		slice->len = static_cast<int>( mxCount[0] );
 
 		std::memcpy(slice->position, pPositions, numelPositions * sizeof(f32));
-		std::memcpy(slice->normal, pNormals, numelNormals * sizeof(f32));
+		std::memcpy(slice->orientation, pOrientations, numelOrientations * sizeof(f32));
 		std::memcpy(slice->size, pSizes, numelSizes * sizeof(f32));
 		std::memcpy(slice->apodization, pApodizations, numelApodizations * sizeof(f32));
 		std::memcpy(slice->delay, pDelays, numelDelays * sizeof(f32));

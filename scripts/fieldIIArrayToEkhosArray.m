@@ -24,19 +24,20 @@ end
 
 positions = single(rectData(8:10, :));
 sizes = single(rectData(3:4, :));
-normals = zeros(3, elementCount, 'single');
+orientations = zeros(4, elementCount, 'single');
 for elementIndex = 1:elementCount
     corners = reshape(rectData(11:22, elementIndex), 4, 3)';
-    firstEdge = corners(:, 2) - corners(:, 1);
-    secondEdge = corners(:, 3) - corners(:, 2);
-    normal = cross(firstEdge, secondEdge);
-    normals(:, elementIndex) = single(normal / norm(normal));
+    widthAxis = corners(:, 4) - corners(:, 1);
+    heightAxis = corners(:, 2) - corners(:, 1);
+    normal = cross(widthAxis, heightAxis);
+    frame = [widthAxis / norm(widthAxis), heightAxis / norm(heightAxis), normal / norm(normal)];
+    orientations(:, elementIndex) = rotationMatrixToQuaternion(frame);
 end
 
 elements = ekhos.RectangularElementSet();
 elements.Count = uint32(elementCount);
 elements.Positions = positions;
-elements.Normals = normals;
+elements.Orientations = orientations;
 elements.Sizes = sizes;
 elements.Apodizations = apodizations;
 elements.Delays = delays;

@@ -238,7 +238,7 @@ vkStagableBuffer :: struct {
 
 vkDataBufferHeader :: struct {
 	elementPositions:            u32,
-	elementNormals:              u32,
+	elementOrientations:         u32,
 	elementSizes:                u32,
 	elementApodizations:         u32,
 	elementDelays:               u32,
@@ -1730,9 +1730,9 @@ pack_vk_element_buffer :: proc(transmitElements: #soa[]RectangularElement, recei
 	elementCount: int = len(transmitElements) + len(receiveElements)
 	rectangularElements := make([]byte, elementTotalSize)
 	elementBuffer := rectangularElements
-	positions: [][3]f32; normals: [][3]f32; sizes: [][2]f32; apodizations: []f32; delays: []f32
+	positions: [][3]f32; orientations: [][4]f32; sizes: [][2]f32; apodizations: []f32; delays: []f32
 	elementBuffer, positions = separate_soa_buffer(elementBuffer, elementCount, [3]f32)
-	elementBuffer, normals = separate_soa_buffer(elementBuffer, elementCount, [3]f32)
+	elementBuffer, orientations = separate_soa_buffer(elementBuffer, elementCount, [4]f32)
 	elementBuffer, sizes = separate_soa_buffer(elementBuffer, elementCount, [2]f32)
 	elementBuffer, apodizations = separate_soa_buffer(elementBuffer, elementCount, f32)
 	elementBuffer, delays = separate_soa_buffer(elementBuffer, elementCount, f32)
@@ -1747,8 +1747,8 @@ pack_vk_element_buffer :: proc(transmitElements: #soa[]RectangularElement, recei
 
 	mem.copy_non_overlapping(raw_data(positions), transmitElements.position, slice.size(positions))
 	mem.copy_non_overlapping(raw_data(positions[len(transmitElements):]), receiveElements.position, slice.size(positions[len(transmitElements):]))
-	mem.copy_non_overlapping(raw_data(normals), transmitElements.normal, slice.size(normals))
-	mem.copy_non_overlapping(raw_data(normals[len(transmitElements):]), receiveElements.normal, slice.size(normals[len(transmitElements):]))
+	mem.copy_non_overlapping(raw_data(orientations), transmitElements.orientation, slice.size(orientations))
+	mem.copy_non_overlapping(raw_data(orientations[len(transmitElements):]), receiveElements.orientation, slice.size(orientations[len(transmitElements):]))
 	mem.copy_non_overlapping(raw_data(sizes), transmitElements.size, slice.size(sizes))
 	mem.copy_non_overlapping(raw_data(sizes[len(transmitElements):]), receiveElements.size, slice.size(sizes[len(transmitElements):]))
 	mem.copy_non_overlapping(raw_data(apodizations), transmitElements.apodization, slice.size(apodizations))
@@ -1762,7 +1762,7 @@ pack_vk_element_buffer :: proc(transmitElements: #soa[]RectangularElement, recei
 vk_element_buffer_size :: proc(transmitCount, receiveCount: int) -> vk.DeviceSize {
 	elementTotalSize: vk.DeviceSize
 	elementTotalSize += size_of([3]f32) // Position
-	elementTotalSize += size_of([3]f32) // Normals
+	elementTotalSize += size_of([4]f32) // Orientations
 	elementTotalSize += size_of([2]f32) // Sizes
 	elementTotalSize += size_of(f32) // Apodizations
 	elementTotalSize += size_of(f32) // Delays
@@ -1780,8 +1780,8 @@ calculate_vk_data_buffer_offsets :: proc(
 	header.totalSize = size_of(vkDataBufferHeader)
 	header.elementPositions = header.totalSize
 	header.totalSize += elementCount * size_of([3]f32)
-	header.elementNormals = header.totalSize
-	header.totalSize += elementCount * size_of([3]f32)
+	header.elementOrientations = header.totalSize
+	header.totalSize += elementCount * size_of([4]f32)
 	header.elementSizes = header.totalSize
 	header.totalSize += elementCount * size_of([2]f32)
 	header.elementApodizations = header.totalSize
@@ -1855,7 +1855,7 @@ build_vk_data_buffer :: proc(
 	(cast(^vkDataBufferHeader)raw_data(dataBuffer))^ = header
 
 	copy(slice.from_ptr(cast(^[3]f32)raw_data(dataBuffer[header.elementPositions:]), elementCount), slice.from_ptr(elements.position, elementCount))
-	copy(slice.from_ptr(cast(^[3]f32)raw_data(dataBuffer[header.elementNormals:]), elementCount), slice.from_ptr(elements.normal, elementCount))
+	copy(slice.from_ptr(cast(^[4]f32)raw_data(dataBuffer[header.elementOrientations:]), elementCount), slice.from_ptr(elements.orientation, elementCount))
 	copy(slice.from_ptr(cast(^[2]f32)raw_data(dataBuffer[header.elementSizes:]), elementCount), slice.from_ptr(elements.size, elementCount))
 	copy(slice.from_ptr(cast(^f32)raw_data(dataBuffer[header.elementApodizations:]), elementCount), slice.from_ptr(elements.apodization, elementCount))
 	copy(slice.from_ptr(cast(^f32)raw_data(dataBuffer[header.elementDelays:]), elementCount), slice.from_ptr(elements.delay, elementCount))

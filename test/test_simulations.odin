@@ -300,14 +300,14 @@ oneRectSimulation :: proc() -> (ok := true) {
 
 	transmitElement: ekhos.RectangularElement = {
 		position    = {0, 0, 0},
-		normal      = {0, 0, 1},
+		orientation = {0, 0, 0, 1},
 		size        = {2.2e-4, 2.2e-4},
 		apodization = 1,
 	}
 
 	receiveElement: ekhos.RectangularElement = {
 		position    = {0, 0, 0},
-		normal      = {0, 0, 1},
+		orientation = {0, 0, 0, 1},
 		size        = {2.2e-4, 2.2e-4},
 		apodization = 1,
 	}
@@ -454,7 +454,7 @@ make_grid_elements :: proc(columnCount, rowCount: int, pitch, size: [2]f32, z: f
 			y := (f32(row) - f32(rowCount - 1) * 0.5) * pitch[1]
 			elements[index] = {
 				position    = {x, y, z},
-				normal      = {0, 0, 1},
+				orientation = {0, 0, 0, 1},
 				size        = size,
 				apodization = 1,
 			}

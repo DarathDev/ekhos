@@ -66,10 +66,10 @@ SimulationMetrics :: struct {
 	simulationTime: f32,
 }
 
-#assert(size_of(RectangularElement) == 40)
+#assert(size_of(RectangularElement) == 44)
 RectangularElement :: struct {
 	position:    [3]f32,
-	normal:      [3]f32,
+	orientation: [4]f32,
 	size:        [2]f32,
 	apodization: f32,
 	delay:       f32,
@@ -204,7 +204,7 @@ plan_simulation :: proc(
 	case hybridSimulator:
 		assert(settings.gpuSettings.backend == .Vulkan, "Only the Vulkan GPU backend is implemented")
 	}
-	normalize_element_normals(elements)
+	normalize_element_orientations(elements)
 	for transmission in transmissions {
 		for element in transmission.elements {
 			check(element.index >= 0 && element.index < i32(len(elements)))
@@ -290,12 +290,11 @@ response_length :: proc(responses: $T, index: u16) -> i32 {
 	return max(i32(1), i32(len(response)))
 }
 
-normalize_element_normals :: proc(elements: #soa[]RectangularElement) {
+normalize_element_orientations :: proc(elements: #soa[]RectangularElement) {
 	for elementIndex in 0 ..< len(elements) {
-		normal := elements.normal[elementIndex]
-		normalLength := linalg.length(normal)
-		assert(normalLength > linalg.F32_EPSILON, "Element normal must have non-zero length")
-		elements.normal[elementIndex] = normal / normalLength
+		orientation := transmute(quaternion128) elements.orientation[elementIndex]
+		assert(linalg.dot(orientation, orientation) > linalg.F32_EPSILON * linalg.F32_EPSILON, "Element orientation must have non-zero length")
+		elements.orientation[elementIndex] = transmute([4]f32) linalg.normalize(orientation)
 	}
 }
 

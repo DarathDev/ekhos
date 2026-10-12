@@ -47,7 +47,7 @@ public const float StartTime = 0;
 
 public struct Element {
   public float3 position;
-  public float3 normal;
+  public float4 orientation;
   public float2 size;
   public float apodization;
   public float delay;
@@ -80,7 +80,7 @@ public struct ElementSetInfo {
 // cannot express as static struct member offsets.
 public struct DataBufferHeader {
   public uint elementPositions;
-  public uint elementNormals;
+  public uint elementOrientations;
   public uint elementSizes;
   public uint elementApodizations;
   public uint elementDelays;

@@ -547,8 +547,8 @@ simulation.Excitations = {single(excitation)};
 simulation.Elements = ekhos.RectangularElementSet();
 simulation.Elements.Count = uint32(2 * elementCount);
 simulation.Elements.Positions = single([transmitGeometry(8:10, :), receiveGeometry(8:10, :)]);
-simulation.Elements.Normals = single([tangentsToNormals(transmitGeometry(8:10, :)), ...
-    tangentsToNormals(receiveGeometry(8:10, :))]);
+simulation.Elements.Orientations = single([tangentsToQuaternions(transmitGeometry(8:10, :)), ...
+    tangentsToQuaternions(receiveGeometry(8:10, :))]);
 simulation.Elements.Sizes = single([transmitGeometry(3:4, :), receiveGeometry(3:4, :)]);
 simulation.Elements.Apodizations = single([transmitGeometry(5, :), receiveGeometry(5, :)]);
 simulation.Elements.Delays = single([transmitGeometry(23, :), receiveGeometry(23, :)]);
@@ -578,12 +578,6 @@ simulation.Scatters = ekhos.ScatterSet();
 simulation.Scatters.Count = uint32(size(scatterPositions, 2));
 simulation.Scatters.Positions = single(scatterPositions);
 simulation.Scatters.Amplitudes = single(scatterAmplitudes);
-end
-
-function normals = tangentsToNormals(tangents)
-normals = [tangents(2, :)./sqrt(1 + tangents(2, :).^2);
-    tangents(1, :)./sqrt(1 + tangents(1, :).^2);
-    sqrt(1 - (tangents(1, :).^2).*(tangents(2, :).^2))./sqrt(1 + tangents(1, :).^2)./sqrt(1 + tangents(2, :).^2)];
 end
 
 function indices = makeReceiveIndices(receiveGeometry, receiveGroupSize)

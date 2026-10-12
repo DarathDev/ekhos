@@ -35,7 +35,7 @@ elements.Positions = single([
 	reshape(yGrid, 1, []);
 	zeros(1, elementCount)
 	]);
-elements.Normals = repmat(single([0; 0; 1]), 1, elementCount);
+elements.Orientations = repmat(single([0; 0; 0; 1]), 1, elementCount);
 elements.Sizes = repmat(single(elementWidth([2, 1]).'), 1, elementCount);
 elements.Apodizations = ones(1, elementCount, 'single');
 elements.Delays = zeros(1, elementCount, 'single');
