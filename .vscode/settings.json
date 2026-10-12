@@ -1,7 +1,22 @@
 {
+    "[cpp]": {
+        "editor.detectIndentation": false,
+        "editor.insertSpaces": false,
+        "editor.tabSize": 4
+    },
+    "C_Cpp.formatting": "disabled",
     "[slang]": {
         "editor.defaultFormatter": "shader-slang.slang-language-extension"
     },
     "slang.format.clangFormatStyle": "file",
-    "slang.format.clangFormatFallbackStyle": "{ BasedOnStyle: LLVM, ColumnLimit: 140, BinPackArguments: true, BinPackParameters: true, Cpp11BracedListStyle: true, AlignAfterOpenBracket: Align }"
+    "slang.format.clangFormatFallbackStyle": "{ BasedOnStyle: LLVM, ColumnLimit: 140, BinPackArguments: true, BinPackParameters: true, Cpp11BracedListStyle: true, AlignAfterOpenBracket: Align }",
+    "terminal.integrated.shellIntegration.enabled": true,
+    "chat.tools.terminal.autoApprove": {
+        ".\\build.exe": true,
+        ".\\build": true,
+        ".\\bin\\debug\\ekhosTests.exe": true,
+        ".\\bin\\debug\\ekhosTests": true,
+        ".\\bin\\release\\ekhosTests.exe": true,
+        ".\\bin\\release\\ekhosTests": true,
+    },
 }
