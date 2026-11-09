@@ -8,14 +8,14 @@ import "core:log"
 import "core:slice"
 import "core:strings"
 import "core:time"
-import vk "vendor:vulkan"
 import ekhos_util "ekhos:utility"
+import vk "vendor:vulkan"
 
 API_VERSION_13 :: vk.API_VERSION_1_3
 
 EKHOS_VULKAN_INITIALIZED := false
 
-MESSENGER_BREAKPOINT :: #config(MESSENGER_BREAKPOINT, ekhos_util.EKHOS_IS_DEBUG)
+MESSENGER_BREAKPOINT :: #config(MESSENGER_BREAKPOINT, ODIN_DEBUG)
 
 FILTER_VALIDATION_MESSAGES: []i32 : {}
 

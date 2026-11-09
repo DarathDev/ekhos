@@ -6,7 +6,6 @@ import "core:log"
 import "core:os"
 import "core:strings"
 import si "core:sys/info"
-import util "src/utility"
 
 when ODIN_DEBUG { EKHOS_DEFAULT_BUILD_MODE :: "debug" } else { EKHOS_DEFAULT_BUILD_MODE :: "release" }
 EKHOS_BUILD_MODE: string
@@ -48,17 +47,6 @@ EKHOS_ODIN_PROFILE_DEFINES: []OdinDefine = {{name = "PROF_MODE", value = "1"}, {
 EKHOS_ODIN_BENCHMARK_DEFINES: []OdinDefine = {{name = "BENCHMARK", value = "true"}}
 
 EKHOS_ODIN_DEBUG_DEFINES: []OdinDefine = {{name = "REQUIRE_RESOURCE_LABELS", value = "false"}}
-
-@(private = "file")
-is_ok :: util.is_ok
-@(private = "file")
-confirm :: util.confirm
-@(private = "file")
-check :: util.check
-@(private = "file")
-assert :: util.assert
-@(private = "file")
-assume :: util.assume
 
 EKHOS_GLSLANG_OPTIONS: []CliOptions = {{flag = 'V'}, {flag = 'e', value = "main"}, {flag = "target-env", value = "vulkan1.2"}, {flag = "spirv-val"}}
 
@@ -173,20 +161,19 @@ main :: proc() {
 }
 
 build_lib :: proc(options: ^[dynamic]OdinBuildOption) -> (ok := true) {
-	assert(check_cmd(ODIN_CMD), fmt.aprintf("Odin Command \"%v\" not found", ODIN_CMD))
-	assert(check_cmd(SLANG_CMD), fmt.aprintf("Slang Command \"%v\" not found", SLANG_CMD))
+	assert(check_cmd(ODIN_CMD), fmt.tprintf("Odin command %q not found", ODIN_CMD))
+	assert(check_cmd(SLANG_CMD), fmt.tprintf("Slang command %q not found", SLANG_CMD))
 
 	// Compile Shaders
-	for shader in EKHOS_PULSE_ECHO_SHADERS do confirm(compile_shader_slangc(shader))
+	for shader in EKHOS_PULSE_ECHO_SHADERS do confirm(compile_shader_slangc(shader)) or_return
 
 	// Compile PFFFT
 	build_pffft() or_return
 
 	outputDir := assume(os.join_path({INSTALL_LOCATION, EKHOS_LIBRARY_OUT_DIR, EKHOS_OUTPUT_SUBDIR}, context.allocator))
 	// Make Output Directory
-	if !os.is_directory(outputDir) {
-		build_log(os.stdout, .Info, fmt.tprintf("Making Directory %s", outputDir))
-		os.make_directory_all(outputDir)
+	if !check(os.is_directory(outputDir), fmt.tprintf("Making Directory %s", outputDir)) {
+		is_ok(confirm(os.make_directory_all(outputDir), fmt.tprintf("Could not create %s", outputDir))) or_return
 	}
 
 	// Odin Compilation
@@ -204,7 +191,7 @@ build_lib :: proc(options: ^[dynamic]OdinBuildOption) -> (ok := true) {
 	odinCmd := make([dynamic]string)
 	append(&odinCmd, ODIN_CMD, ODIN_BUILD_ARG, EKHOS_SRC_DIR)
 	append(&odinCmd, ..odin_options_to_args(options[:]))
-	assert(assert(run_cmd(odinCmd[:])) == 0)
+	run_cmd_checked(odinCmd[:]) or_return
 	pffftObjectPath := assume(os.join_path({TMP_DIRECTORY + "pffft/", assume(os.join_filename("pffft", get_cpp_object_extension(CPP_COMPILER_KIND), context.temp_allocator))}, context.allocator))
 	append_object_to_static_library(CPP_COMPILER_KIND, libraryOutPath, pffftObjectPath) or_return
 
@@ -215,8 +202,8 @@ build_lib :: proc(options: ^[dynamic]OdinBuildOption) -> (ok := true) {
 			matlabLibraryName := assume(os.join_filename(fmt.aprintf("%sLib", EKHOS_OUTPUT_LIB_NAME), "a", context.allocator))
 		}
 		matlabPath := assume(os.join_path({INSTALL_LOCATION, MATLAB_DIR, matlabLibraryName}, context.allocator))
-		build_log(os.stdout, .Info, fmt.tprintf("Copying %s to %s", libraryOutPath, matlabPath))
-		assert(os.copy_file(matlabPath, libraryOutPath))
+		info(false, fmt.tprintf("Copying %s to %s", libraryOutPath, matlabPath))
+		is_ok(confirm(os.copy_file(matlabPath, libraryOutPath), fmt.tprintf("Could not copy %s to %s", libraryOutPath, matlabPath))) or_return
 	}
 
 	return
@@ -234,8 +221,7 @@ build_test :: proc(options: ^[dynamic]OdinBuildOption) -> (ok := true) {
 
 	outputDir := assume(os.join_path({INSTALL_LOCATION, EKHOS_BINARY_OUT_DIR, EKHOS_OUTPUT_SUBDIR}, context.allocator))
 	// Make Output Directory
-	if !os.is_directory(outputDir) {
-		build_log(os.stdout, .Info, fmt.tprintf("Making Directory %s", outputDir))
+	if !check(os.is_directory(outputDir), fmt.tprintf("Making Directory %s", outputDir)) {
 		os.make_directory_all(outputDir)
 	}
 
@@ -288,12 +274,12 @@ append_object_to_static_library :: proc(compilerKind: CompilerKind, libraryPath,
 
 	archiverPath := get_cpp_static_archiver(compilerKind)
 	command := []string{archiverPath, "rcs", libraryPath, objectPath}
-	assert(assert(run_cmd(command)) == 0)
+	run_cmd_checked(command) or_return
 	return
 }
 
 build_pffft :: proc() -> (ok := true) {
-	build_log(os.stdout, .Info, "Building PFFFT")
+	info(false, "Building PFFFT")
 	clone_required_submodules() or_return
 	compilerPath, compilerKind := detect_cpp_compiler() or_return
 	tmpDirectory := TMP_DIRECTORY + "pffft/"
@@ -309,7 +295,7 @@ build_pffft :: proc() -> (ok := true) {
 		debug             = EKHOS_BUILD_MODE == "debug",
 	}
 	compileCmd := build_cpp_compile_command(compilerKind, compileParameters) or_return
-	assert(assert(run_cmd(compileCmd)) == 0)
+	run_cmd_checked(compileCmd) or_return
 	objectPath := assume(
 		os.join_path(
 			{tmpDirectory, assume(os.join_filename("pffft", get_cpp_object_extension(compilerKind), context.temp_allocator))},
@@ -326,6 +312,6 @@ build_pffft :: proc() -> (ok := true) {
 		outputPath   = libraryPath,
 	}
 	archiveCmd := build_cpp_archive_command(compilerKind, archiveParameters) or_return
-	assert(assert(run_cmd(archiveCmd)) == 0)
+	run_cmd_checked(archiveCmd) or_return
 	return
 }

@@ -5,20 +5,8 @@ import "core:fmt"
 import "core:os"
 import "core:slice"
 import "core:strings"
-import util "src/utility"
 
-@(private = "file")
-is_ok :: util.is_ok
-@(private = "file")
-confirm :: util.confirm
-@(private = "file")
-check :: util.check
-@(private = "file")
-assert :: util.assert
-@(private = "file")
-assume :: util.assume
-
-run_cmd :: proc(cmd: []string, working_dir: string = "", broadcast := true) -> (exit_code: int, ok := true) {
+run_cmd :: proc(cmd: []string, working_dir: string = "", broadcast := true, loc := #caller_location) -> (exit_code: int, ok := true) {
 	processDesc: os.Process_Desc = {
 		command     = cmd,
 		working_dir = working_dir,
@@ -28,30 +16,38 @@ run_cmd :: proc(cmd: []string, working_dir: string = "", broadcast := true) -> (
 	}
 
 	if broadcast do build_log(os.stdout, .Command, strings.join(cmd, " "))
-	process := is_ok(check(os.process_start(processDesc))) or_return
-	state := is_ok(check(os.process_wait(process))) or_return
+	process := is_ok(confirm(os.process_start(processDesc), fmt.tprintf("Failed to start command %s", strings.join(cmd, " ")), loc)) or_return
+	state := is_ok(confirm(os.process_wait(process), fmt.tprintf("Failed to wait on command %s", strings.join(cmd, " ")), loc)) or_return
 	exit_code = state.exit_code
-	if exit_code != 0 {
-		build_log(os.stderr, .Error, fmt.tprintf("Command exited with code %d: %s", exit_code, strings.join(cmd, " ")))
-	}
 	return
 }
 
-run_cmd_capture :: proc(cmd: []string, working_dir: string = "", broadcast := true) -> (exit_code: int, stdout, stderr: []byte, ok := true) {
+run_cmd_checked :: proc(cmd: []string, loc := #caller_location) -> (ok := true) {
+	exit_code := run_cmd(cmd, loc = loc) or_return
+	confirm(exit_code == 0, fmt.tprintf("Command exited with code %d: %s", exit_code, strings.join(cmd, " "))) or_return
+	return
+}
+
+run_cmd_capture :: proc(
+	cmd: []string,
+	working_dir: string = "",
+	broadcast := true,
+	loc := #caller_location,
+) -> (
+	exit_code: int,
+	stdout, stderr: []byte,
+	ok := true,
+) {
 	if broadcast do build_log(os.stdout, .Command, strings.join(cmd, " "))
-	state, captured_stdout, captured_stderr, err := os.process_exec({command = cmd, working_dir = working_dir}, context.allocator)
-	if err != nil {
-		ok = false
-		return
-	}
+	state, captured_stdout, captured_stderr := is_ok(
+		confirm(os.process_exec({command = cmd, working_dir = working_dir}, context.allocator), loc = loc),
+	) or_return
 	exit_code = state.exit_code
 	stdout = captured_stdout
 	stderr = captured_stderr
-	if len(stdout) > 0 do build_log(os.stdout, .Info, strings.trim_right_space(string(stdout)))
-	if len(stderr) > 0 do build_log(os.stderr, .Error, strings.trim_right_space(string(stderr)))
-	if exit_code != 0 {
-		build_log(os.stderr, .Error, fmt.tprintf("Command exited with code %d: %s", exit_code, strings.join(cmd, " ")))
-	}
+	info(len(stdout) == 0, strings.trim_right_space(string(stdout)))
+	error(len(stderr) == 0, strings.trim_right_space(string(stderr)))
+	confirm(exit_code == 0, fmt.tprintf("Command exited with code %d: %s", exit_code, strings.join(cmd, " "))) or_return
 	return
 }
 
@@ -135,12 +131,12 @@ rebuild_needed :: proc(artifact_path: string, source_files: []string) -> (ok: bo
 	for src in source_files {
 		src_info := is_ok(os.stat(src, context.allocator)) or_return
 		if src_info.modification_time._nsec > artifact_info.modification_time._nsec {
-			build_log(os.stdout, .Info, fmt.tprintf("Source %s is newer than artifact %s, rebuild required", src, artifact_path))
+			info(false, fmt.tprintf("Source %s is newer than artifact %s, rebuild required", src, artifact_path))
 			return true
 		}
 	}
 
-	build_log(os.stdout, .Info, fmt.tprintf("Artifact %s is up to date", artifact_path))
+	info(false, fmt.tprintf("Artifact %s is up to date", artifact_path))
 	return false
 }
 
@@ -320,7 +316,7 @@ get_static_library_extensions :: proc(platform: runtime.Odin_OS_Type) -> string 
 	case .Linux:
 		return "a"
 	}
-	build_log(os.stdout, .Error, fmt.tprintf("Invalid Platform %s", platform))
+	error(false, fmt.tprintf("Invalid Platform %s", platform))
 	assert(false)
 	return ""
 }
@@ -356,7 +352,7 @@ detect_cpp_compiler :: proc() -> (path: string, kind: CompilerKind, ok := true) 
 	}
 
 	if len(compile) == 0 {
-		build_log(os.stderr, .Error, "No C++ compiler found. Set CXX or CC to a valid compiler executable.")
+		error(false, "No C++ compiler found. Set CXX or CC to a valid compiler executable.")
 		ok = false
 		return
 	}
@@ -405,7 +401,7 @@ build_cpp_compile_command :: proc(compilerKind: CompilerKind, parameters: CppCom
 		append(&cppOptions, CppOption{flag = "c"})
 		outputDirectory, outputFilename := os.split_path(parameters.outputPath)
 		if !os.is_dir(outputDirectory) {
-			build_log(os.stdout, .Info, fmt.tprintf("Making Directory %s", outputDirectory))
+			info(false, fmt.tprintf("Making Directory %s", outputDirectory))
 			assert(os.make_directory_all(outputDirectory))
 		}
 		if len(outputFilename) == 0 do outputPath = parameters.outputPath
@@ -413,12 +409,12 @@ build_cpp_compile_command :: proc(compilerKind: CompilerKind, parameters: CppCom
 			objExt := get_cpp_object_extension(compilerKind)
 			if strings.compare(os.ext(outputFilename), fmt.tprintf(".%s", objExt)) == 0 do outputPath = parameters.outputPath
 			else if len(outputFilename) > 0 {
-				build_log(os.stdout, .Error, fmt.tprintf("Output file %s has an invalid object file extension", outputFilename))
+				error(false, fmt.tprintf("Output file %s has an invalid object file extension", outputFilename))
 				return {}, false
 			} else do outputPath = assume(os.join_path({outputDirectory, assume(os.join_filename(outputFilename, objExt, context.temp_allocator))}, context.temp_allocator))
 
 			if len(parameters.sourcePaths) > 1 {
-				build_log(os.stdout, .Error, fmt.tprintf("Cannot specify a single output file %s when there are multiple source files", parameters.outputPath))
+				error(false, fmt.tprintf("Cannot specify a single output file %s when there are multiple source files", parameters.outputPath))
 				return {}, false
 			}
 		}
@@ -426,7 +422,7 @@ build_cpp_compile_command :: proc(compilerKind: CompilerKind, parameters: CppCom
 	case .SharedLibrary:
 		fallthrough
 	case .Executable:
-		build_log(os.stdout, .Error, fmt.tprintf("C++ Output Type %s Not Implemented!", parameters.outputType))
+		error(false, fmt.tprintf("C++ Output Type %s Not Implemented!", parameters.outputType))
 	}
 
 	if compilerKind == .MSVC {
@@ -467,18 +463,18 @@ build_cpp_compile_command :: proc(compilerKind: CompilerKind, parameters: CppCom
 		else do append(&cppOptions, CppOption{flag = "O0"})
 	case .Release:
 		if compilerKind == .MSVC {
-			if parameters.debug do build_log(os.stdout, .Warning, "Building with Release optimizations conflicts with debug information!")
+			if parameters.debug do warn(false, "Building with Release optimizations conflicts with debug information!")
 			append(&cppOptions, CppOption{flag = "O2"})
 		} else {
 			if parameters.debug do append(&cppOptions, CppOption{flag = "Og"})
 			else do append(&cppOptions, CppOption{flag = "O2"})
 		}
 	case .Speed:
-		if parameters.debug do build_log(os.stdout, .Warning, "Building with Speed optimizations conflicts with debug information!")
+		if parameters.debug do warn(false, "Building with Speed optimizations conflicts with debug information!")
 		if compilerKind == .MSVC do append(&cppOptions, CppOption{flag = "O2"})
 		else do append(&cppOptions, CppOption{flag = "O3"})
 	case .Size:
-		if parameters.debug do build_log(os.stdout, .Warning, "Building with Size optimizations conflicts with debug information!")
+		if parameters.debug do warn(false, "Building with Size optimizations conflicts with debug information!")
 		if compilerKind == .MSVC do append(&cppOptions, CppOption{flag = "Os"})
 		else do append(&cppOptions, CppOption{flag = "O1"})
 	}

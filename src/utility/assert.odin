@@ -5,62 +5,94 @@ import "base:runtime"
 import "core:log"
 import "core:testing"
 
-EKHOS_IS_DEBUG :: ODIN_DEBUG
-EKHOS_IS_RELEASE :: !ODIN_DEBUG
+size :: distinct int
 
-panic :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
-	if ok do return
+VERIFY_PANIC :: #config(VERIFY_PANIC, ODIN_DEBUG)
+VERIFY_FATAL :: #config(VERIFY_FATAL, !VERIFY_PANIC)
+
+CONFIRM_PANIC  :: #config(CONFIRM_PANIC, ODIN_DEBUG)
+CONFIRM_ERROR  :: #config(CONFIRM_ERROR, !CONFIRM_PANIC && ODIN_OPTIMIZATION_MODE != .Speed)
+CONFIRM_IGNORE :: #config(CONFIRM_IGNORE, !CONFIRM_PANIC && !CONFIRM_ERROR)
+
+CHECK_WARN   :: #config(CHECK_WARN, false)
+CHECK_INFO   :: #config(CHECK_INFO, !CHECK_WARN && ODIN_DEBUG)
+CHECK_IGNORE :: #config(CHECK_IGNORE, !CHECK_WARN && !CHECK_INFO)
+
+ASSERT_PANIC  :: #config(ASSERT_PANIC, ODIN_DEBUG && ODIN_OPTIMIZATION_MODE != .Speed)
+ASSERT_ERROR  :: #config(ASSERT_ERROR, !ASSERT_PANIC && ODIN_OPTIMIZATION_MODE != .Speed)
+ASSERT_IGNORE :: #config(ASSERT_IGNORE, !ASSERT_PANIC && !ASSERT_ERROR)
+
+ASSUME_WARN   :: #config(ASSUME_WARN, ODIN_DEBUG)
+ASSUME_IGNORE :: #config(ASSUME_IGNORE, !ASSUME_WARN)
+
+#assert(VERIFY_PANIC || VERIFY_FATAL, "Invalid setting for verify!")
+#assert(CONFIRM_PANIC || CONFIRM_ERROR || CONFIRM_IGNORE, "Invalid setting for confirm!")
+#assert(CHECK_WARN || CHECK_INFO || CHECK_IGNORE, "Invalid setting for check!")
+#assert(ASSERT_PANIC || ASSERT_ERROR || ASSERT_IGNORE, "Invalid setting for assert!")
+#assert(ASSUME_WARN || ASSUME_IGNORE, "Invalid setting for assume!")
+
+ignore :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {  }
+
+info :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
+	if ok { return }
 	@(cold)
 	internal :: proc(message: string, loc: runtime.Source_Code_Location, detail: ..any) {
-		if len(detail) > 0 do log.panicf("%s (%v)", message, detail[0], location = loc)
-		else do log.panicf(message, location = loc)
-	}
-	internal(message, loc, ..detail)
-}
-
-fatal :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
-	if ok do return
-	@(cold)
-	internal :: proc(message: string, loc: runtime.Source_Code_Location, detail: ..any) {
-		if len(detail) > 0 do log.fatalf("%s (%v)", message, detail[0], location = loc)
-		else do log.fatalf(message, location = loc)
-	}
-	internal(message, loc, ..detail)
-}
-
-error :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
-	if ok do return
-	@(cold)
-	internal :: proc(message: string, loc: runtime.Source_Code_Location, detail: ..any) {
-		if len(detail) > 0 do log.errorf("%s (%v)", message, detail[0], location = loc)
-		else do log.errorf(message, location = loc)
+		if len(detail) > 0 { log.infof("%s (%v)", message, detail[0], location = loc) } else { log.error(message, location = loc) }
 	}
 	internal(message, loc, ..detail)
 }
 
 warn :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
-	if ok do return
+	if ok { return }
 	@(cold)
 	internal :: proc(message: string, loc: runtime.Source_Code_Location, detail: ..any) {
-		if len(detail) > 0 do log.warnf("%s (%v)", message, detail[0], location = loc)
-		else do log.warnf(message, location = loc)
+		if len(detail) > 0 { log.warnf("%s (%v)", message, detail[0], location = loc) } else { log.error(message, location = loc) }
 	}
 	internal(message, loc, ..detail)
 }
 
-ignore :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
-	// Intentionally do nothing
+error :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
+	if ok { return }
+	@(cold)
+	internal :: proc(message: string, loc: runtime.Source_Code_Location, detail: ..any) {
+		if len(detail) > 0 { log.errorf("%s (%v)", message, detail[0], location = loc) } else { log.error(message, location = loc) }
+	}
+	internal(message, loc, ..detail)
+}
+
+panic :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
+	if ok { return }
+	@(cold)
+	internal :: proc(message: string, loc: runtime.Source_Code_Location, detail: ..any) {
+		if len(detail) > 0 { log.panicf("%s (%v)", message, detail[0], location = loc) } else { log.panic(message, location = loc) }
+	}
+	internal(message, loc, ..detail)
+}
+
+fatal :: #force_inline proc(ok: bool, message: string, loc := #caller_location, detail: ..any) {
+	if ok { return }
+	@(cold)
+	internal :: proc(message: string, loc: runtime.Source_Code_Location, detail: ..any) {
+		if len(detail) > 0 { log.fatalf("%s (%v)", message, detail[0], location = loc) } else { log.fatal(message, location = loc) }
+	}
+	internal(message, loc, ..detail)
 }
 
 test :: #force_inline proc(t: ^testing.T, ok: bool, message: string, loc := #caller_location, detail: ..any) {
-	if ok do return
+	if ok { return }
 	@(cold)
 	internal :: proc(t: ^testing.T, ok: bool, message: string, loc: runtime.Source_Code_Location, detail: ..any) {
-		if len(detail) > 0 do testing.expectf(t, ok, "%s (%v)", message, detail[0], loc = loc)
-		else do testing.expectf(t, ok, message, loc = loc)
+		if len(detail) > 0 { testing.expectf(t, ok, "%s (%v)", message, detail[0], loc = loc) } else { testing.expectf(t, ok, message, loc = loc) }
 	}
 	internal(t, ok, message, loc, ..detail)
 }
+
+@(cold)
+fail :: #force_inline proc(message := "", loc := #caller_location) -> ! {
+	log.panicf(message, location = loc)
+}
+
+not_implemented :: #force_inline proc() -> ! { fail("Not Implemented!") }
 
 ensure :: proc {
 	ensure_bool_zero,
@@ -78,6 +110,8 @@ ensure :: proc {
 	ensure_union_two,
 	ensure_union_three,
 	ensure_union_four,
+	ensure_rawptr,
+	ensure_size,
 }
 
 verify :: proc {
@@ -96,6 +130,8 @@ verify :: proc {
 	verify_union_two,
 	verify_union_three,
 	verify_union_four,
+	verify_rawptr,
+	verify_size,
 }
 
 confirm :: proc {
@@ -114,24 +150,8 @@ confirm :: proc {
 	confirm_union_two,
 	confirm_union_three,
 	confirm_union_four,
-}
-
-assert :: proc {
-	assert_bool_zero,
-	assert_bool_one,
-	assert_bool_two,
-	assert_bool_three,
-	assert_bool_four,
-	assert_enum_zero,
-	assert_enum_one,
-	assert_enum_two,
-	assert_enum_three,
-	assert_enum_four,
-	assert_union_zero,
-	assert_union_one,
-	assert_union_two,
-	assert_union_three,
-	assert_union_four,
+	confirm_rawptr,
+	confirm_size,
 }
 
 check :: proc {
@@ -150,6 +170,28 @@ check :: proc {
 	check_union_two,
 	check_union_three,
 	check_union_four,
+	check_rawptr,
+	check_size,
+}
+
+assert :: proc {
+	assert_bool_zero,
+	assert_bool_one,
+	assert_bool_two,
+	assert_bool_three,
+	assert_bool_four,
+	assert_enum_zero,
+	assert_enum_one,
+	assert_enum_two,
+	assert_enum_three,
+	assert_enum_four,
+	assert_union_zero,
+	assert_union_one,
+	assert_union_two,
+	assert_union_three,
+	assert_union_four,
+	assert_rawptr,
+	assert_size,
 }
 
 assume :: proc {
@@ -168,32 +210,8 @@ assume :: proc {
 	assume_union_two,
 	assume_union_three,
 	assume_union_four,
-}
-
-expect :: proc {
-	expect_bool_zero,
-	expect_bool_one,
-	expect_bool_two,
-	expect_bool_three,
-	expect_bool_four,
-	expect_enum_zero,
-	expect_enum_one,
-	expect_enum_two,
-	expect_enum_three,
-	expect_enum_four,
-	expect_union_zero,
-	expect_union_one,
-	expect_union_two,
-	expect_union_three,
-	expect_union_four,
-}
-
-expect_not :: proc {
-	expect_not_bool_zero,
-	expect_not_bool_one,
-	expect_not_bool_two,
-	expect_not_bool_three,
-	expect_not_bool_four,
+	assume_rawptr,
+	assume_size,
 }
 
 is_ok :: proc {
@@ -213,266 +231,14 @@ ensure_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #cal
 	panic(bool(condition), message, loc)
 }
 
-verify_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_RELEASE {
-		fatal(bool(condition), message, loc)
-	} else {
-		panic(bool(condition), message, loc)
-	}
-	return bool(condition)
-}
-
-confirm_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(condition), message, loc)
-	} else {
-		error(bool(condition), message, loc)
-	}
-	return bool(condition)
-}
-
-assert_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(condition), message, loc)
-	} else {
-		ignore(bool(condition), message, loc)
-	}
-}
-
-check_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_RELEASE {
-		ignore(bool(condition), message, loc)
-	} else {
-		warn(bool(condition), message, loc)
-	}
-	return bool(condition)
-}
-
-assume_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_DEBUG {
-		warn(bool(condition), message, loc)
-	}
-}
-
-expect_bool_zero :: #force_inline proc(t: ^testing.T, condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
-	test(t, bool(condition), message, loc)
-	return bool(condition)
-}
-
-expect_not_bool_zero :: #force_inline proc(t: ^testing.T, condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
-	cond := bool(condition)
-	test(t, !cond, message, loc)
-	return !cond
-}
-
 ensure_bool_one :: #force_inline proc(value: $T, ok: $B, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_boolean(B) {
 	panic(bool(ok), message, loc)
 	return value
 }
 
-verify_bool_one :: #force_inline proc(
-	value: $T,
-	ok: $B,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	bool,
-) where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_RELEASE {
-		fatal(bool(ok), message, loc)
-	} else {
-		panic(bool(ok), message, loc)
-	}
-	return value, bool(ok)
-}
-
-confirm_bool_one :: #force_inline proc(
-	value: $T,
-	ok: $B,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	bool,
-) where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		error(bool(ok), message, loc)
-	}
-	return value, bool(ok)
-}
-
-assert_bool_one :: #force_inline proc(value: $T, ok: $B, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		ignore(bool(ok), message, loc)
-	}
-	return value
-}
-
-check_bool_one :: #force_inline proc(
-	value: $T,
-	ok: $B,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	bool,
-) where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_RELEASE {
-		ignore(bool(ok), message, loc)
-	} else {
-		warn(bool(ok), message, loc)
-	}
-	return value, bool(ok)
-}
-
-assume_bool_one :: #force_inline proc(value: $T, ok: $B, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_boolean(B) {
-	when EKHOS_IS_DEBUG {
-		warn(bool(ok), message, loc)
-	}
-	return value
-}
-
-expect_bool_one :: #force_inline proc(
-	t: ^testing.T,
-	value: $T,
-	ok: $B,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	bool,
-) where intrinsics.type_is_boolean(B) #optional_ok {
-	test(t, bool(ok), message, loc)
-	return value, bool(ok)
-}
-
-expect_not_bool_one :: #force_inline proc(
-	t: ^testing.T,
-	value: $T,
-	ok: $B,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	bool,
-) where intrinsics.type_is_boolean(B) #optional_ok {
-	test(t, !bool(ok), message, loc)
-	return value, !bool(ok)
-}
-
 ensure_bool_two :: #force_inline proc(first: $A, second: $B, ok: $C, message := "", loc := #caller_location) -> (A, B) where intrinsics.type_is_boolean(C) {
 	panic(bool(ok), message, loc)
 	return first, second
-}
-
-verify_bool_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	ok: $C,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	bool,
-) where intrinsics.type_is_boolean(C) {
-	when EKHOS_IS_RELEASE {
-		fatal(bool(ok), message, loc)
-	} else {
-		panic(bool(ok), message, loc)
-	}
-	return first, second, bool(ok)
-}
-
-confirm_bool_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	ok: $C,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	bool,
-) where intrinsics.type_is_boolean(C) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		error(bool(ok), message, loc)
-	}
-	return first, second, bool(ok)
-}
-
-assert_bool_two :: #force_inline proc(first: $A, second: $B, ok: $C, message := "", loc := #caller_location) -> (A, B) where intrinsics.type_is_boolean(C) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		ignore(bool(ok), message, loc)
-	}
-	return first, second
-}
-
-check_bool_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	ok: $C,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	bool,
-) where intrinsics.type_is_boolean(C) {
-	when EKHOS_IS_RELEASE {
-		ignore(bool(ok), message, loc)
-	} else {
-		warn(bool(ok), message, loc)
-	}
-	return first, second, bool(ok)
-}
-
-assume_bool_two :: #force_inline proc(first: $A, second: $B, ok: $C, message := "", loc := #caller_location) -> (A, B) where intrinsics.type_is_boolean(C) {
-	when EKHOS_IS_DEBUG {
-		warn(bool(ok), message, loc)
-	}
-	return first, second
-}
-
-expect_bool_two :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	ok: $C,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	bool,
-) where intrinsics.type_is_boolean(C) {
-	test(t, bool(ok), message, loc)
-	return first, second, bool(ok)
-}
-
-expect_not_bool_two :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	ok: $C,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	bool,
-) where intrinsics.type_is_boolean(C) {
-	test(t, !bool(ok), message, loc)
-	return first, second, !bool(ok)
 }
 
 ensure_bool_three :: #force_inline proc(
@@ -489,143 +255,6 @@ ensure_bool_three :: #force_inline proc(
 ) where intrinsics.type_is_boolean(D) {
 	panic(bool(ok), message, loc)
 	return first, second, third
-}
-
-verify_bool_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	ok: $D,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_boolean(D) {
-	when EKHOS_IS_RELEASE {
-		fatal(bool(ok), message, loc)
-	} else {
-		panic(bool(ok), message, loc)
-	}
-	return first, second, third, bool(ok)
-}
-
-confirm_bool_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	ok: $D,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_boolean(D) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		error(bool(ok), message, loc)
-	}
-	return first, second, third, bool(ok)
-}
-
-assert_bool_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	ok: $D,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-) where intrinsics.type_is_boolean(D) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		ignore(bool(ok), message, loc)
-	}
-	return first, second, third
-}
-
-check_bool_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	ok: $D,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_boolean(D) {
-	when EKHOS_IS_RELEASE {
-		ignore(bool(ok), message, loc)
-	} else {
-		warn(bool(ok), message, loc)
-	}
-	return first, second, third, bool(ok)
-}
-
-assume_bool_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	ok: $D,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-) where intrinsics.type_is_boolean(D) {
-	when EKHOS_IS_DEBUG {
-		warn(bool(ok), message, loc)
-	}
-	return first, second, third
-}
-
-expect_bool_three :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	ok: $D,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_boolean(D) {
-	test(t, bool(ok), message, loc)
-	return first, second, third, bool(ok)
-}
-
-expect_not_bool_three :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	ok: $D,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_boolean(D) {
-	test(t, !bool(ok), message, loc)
-	return first, second, third, !bool(ok)
 }
 
 ensure_bool_four :: #force_inline proc(
@@ -646,277 +275,13 @@ ensure_bool_four :: #force_inline proc(
 	return first, second, third, fourth
 }
 
-verify_bool_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	ok: $E,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_boolean(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(bool(ok), message, loc)
-	} else {
-		panic(bool(ok), message, loc)
-	}
-	return first, second, third, fourth, bool(ok)
-}
-
-confirm_bool_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	ok: $E,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_boolean(E) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		error(bool(ok), message, loc)
-	}
-	return first, second, third, fourth, bool(ok)
-}
-
-assert_bool_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	ok: $E,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-) where intrinsics.type_is_boolean(E) {
-	when EKHOS_IS_DEBUG {
-		panic(bool(ok), message, loc)
-	} else {
-		ignore(bool(ok), message, loc)
-	}
-	return first, second, third, fourth
-}
-
-check_bool_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	ok: $E,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_boolean(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(bool(ok), message, loc)
-	} else {
-		warn(bool(ok), message, loc)
-	}
-	return first, second, third, fourth, bool(ok)
-}
-
-assume_bool_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	ok: $E,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-) where intrinsics.type_is_boolean(E) {
-	when EKHOS_IS_DEBUG {
-		warn(bool(ok), message, loc)
-	}
-	return first, second, third, fourth
-}
-
-expect_bool_four :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	ok: $E,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_boolean(E) {
-	test(t, bool(ok), message, loc)
-	return first, second, third, fourth, bool(ok)
-}
-
-expect_not_bool_four :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	ok: $E,
-	message := "",
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_boolean(E) {
-	test(t, !bool(ok), message, loc)
-	return first, second, third, fourth, !bool(ok)
-}
-
 ensure_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_enum(E) {
 	panic(cast(int)err == 0, message, loc, err)
-}
-
-verify_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(cast(int)err == 0, message, loc, err)
-	} else {
-		panic(cast(int)err == 0, message, loc, err)
-	}
-	return err
-}
-
-confirm_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return err
-}
-
-assert_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		ignore(cast(int)err == 0, message, loc, err)
-	}
-}
-
-check_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(cast(int)err == 0, message, loc, err)
-	} else {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return err
-}
-
-assume_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-}
-
-expect_enum_zero :: #force_inline proc(t: ^testing.T, err: $E, message := "", loc := #caller_location) -> bool where intrinsics.type_is_enum(E) {
-	ok := cast(int)err == 0
-	test(t, ok, message, loc, err)
-	return ok
-}
-
-is_ok_enum_zero :: #force_inline proc(err: $E) -> bool where intrinsics.type_is_enum(E) {
-	return cast(int)err == 0
 }
 
 ensure_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_enum(E) {
 	panic(cast(int)err == 0, message, loc, err)
 	return value
-}
-
-verify_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> (T, E) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(cast(int)err == 0, message, loc, err)
-	} else {
-		panic(cast(int)err == 0, message, loc, err)
-	}
-	return value, err
-}
-
-confirm_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> (T, E) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return value, err
-}
-
-assert_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return value
-}
-
-check_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> (T, E) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(cast(int)err == 0, message, loc, err)
-	} else {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return value, err
-}
-
-assume_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return value
-}
-
-expect_enum_one :: #force_inline proc(
-	t: ^testing.T,
-	value: $T,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	bool,
-) where intrinsics.type_is_enum(E) #optional_ok {
-	ok := cast(int)err == 0
-	test(t, ok, message, loc, err)
-	return value, ok
-}
-
-is_ok_enum_one :: #force_inline proc(value: $T, err: $E) -> (T, bool) where intrinsics.type_is_enum(E) {
-	return value, cast(int)err == 0
 }
 
 ensure_enum_two :: #force_inline proc(
@@ -933,118 +298,6 @@ ensure_enum_two :: #force_inline proc(
 	return first, second
 }
 
-verify_enum_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(cast(int)err == 0, message, loc, err)
-	} else {
-		panic(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, err
-}
-
-confirm_enum_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, err
-}
-
-assert_enum_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return first, second
-}
-
-check_enum_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(cast(int)err == 0, message, loc, err)
-	} else {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, err
-}
-
-assume_enum_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return first, second
-}
-
-expect_enum_two :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	bool,
-) where intrinsics.type_is_enum(E) {
-	ok := cast(int)err == 0
-	test(t, ok, message, loc, err)
-	return first, second, ok
-}
-
-is_ok_enum_two :: #force_inline proc(first: $A, second: $B, err: $E) -> (A, B, bool) where intrinsics.type_is_enum(E) {
-	return first, second, cast(int)err == 0
-}
-
 ensure_enum_three :: #force_inline proc(
 	first: $A,
 	second: $B,
@@ -1059,130 +312,6 @@ ensure_enum_three :: #force_inline proc(
 ) where intrinsics.type_is_enum(E) {
 	panic(cast(int)err == 0, message, loc, err)
 	return first, second, third
-}
-
-verify_enum_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(cast(int)err == 0, message, loc, err)
-	} else {
-		panic(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, err
-}
-
-confirm_enum_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, err
-}
-
-assert_enum_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third
-}
-
-check_enum_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(cast(int)err == 0, message, loc, err)
-	} else {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, err
-}
-
-assume_enum_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third
-}
-
-expect_enum_three :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_enum(E) {
-	ok := cast(int)err == 0
-	test(t, ok, message, loc, err)
-	return first, second, third, ok
-}
-
-is_ok_enum_three :: #force_inline proc(first: $A, second: $B, third: $C, err: $E) -> (A, B, C, bool) where intrinsics.type_is_enum(E) {
-	return first, second, third, cast(int)err == 0
 }
 
 ensure_enum_four :: #force_inline proc(
@@ -1203,206 +332,8 @@ ensure_enum_four :: #force_inline proc(
 	return first, second, third, fourth
 }
 
-verify_enum_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(cast(int)err == 0, message, loc, err)
-	} else {
-		panic(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, fourth, err
-}
-
-confirm_enum_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, fourth, err
-}
-
-assert_enum_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		panic(cast(int)err == 0, message, loc, err)
-	} else {
-		error(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, fourth
-}
-
-check_enum_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	E,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(cast(int)err == 0, message, loc, err)
-	} else {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, fourth, err
-}
-
-assume_enum_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-) where intrinsics.type_is_enum(E) {
-	when EKHOS_IS_DEBUG {
-		warn(cast(int)err == 0, message, loc, err)
-	}
-	return first, second, third, fourth
-}
-
-expect_enum_four :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_enum(E) {
-	ok := cast(int)err == 0
-	test(t, ok, message, loc, err)
-	return first, second, third, fourth, ok
-}
-
-is_ok_enum_four :: #force_inline proc(first: $A, second: $B, third: $C, fourth: $D, err: $E) -> (A, B, C, D, bool) where intrinsics.type_is_enum(E) {
-	return first, second, third, fourth, cast(int)err == 0
-}
-
 ensure_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
 	panic(err == E{}, message, loc, err)
-}
-
-verify_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(err == E{}, message, loc, err)
-	} else {
-		panic(err == E{}, message, loc, err)
-	}
-	return err
-}
-
-confirm_union_zero :: #force_inline proc(
-	err: $E,
-	message := "",
-	loc := #caller_location,
-) -> E where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
-	}
-	return err
-}
-
-assert_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
-	}
-}
-
-check_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(err == E{}, message, loc, err)
-	} else {
-		warn(err == E{}, message, loc, err)
-	}
-	return err
-}
-
-assume_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		warn(err == E{}, message, loc, err)
-	}
-}
-
-expect_union_zero :: #force_inline proc(
-	t: ^testing.T,
-	err: $E,
-	message := "",
-	loc := #caller_location,
-) -> bool where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	ok := err == E{}
-	test(t, ok, message, loc, err)
-	return ok
-}
-
-is_ok_union_zero :: #force_inline proc(err: $E) -> bool where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
-	return err == E{}
 }
 
 ensure_union_one :: #force_inline proc(
@@ -1410,112 +341,13 @@ ensure_union_one :: #force_inline proc(
 	err: $E,
 	message := #caller_expression,
 	loc := #caller_location,
-) -> T where intrinsics.type_is_union(E) &&
+) -> (
+	T,
+	E,
+) where intrinsics.type_is_union(E) &&
 	intrinsics.type_has_nil(E) {
 	panic(err == E{}, message, loc, err)
 	return value
-}
-
-verify_union_one :: #force_inline proc(
-	value: $T,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(err == E{}, message, loc, err)
-	} else {
-		panic(err == E{}, message, loc, err)
-	}
-	return value, err
-}
-
-confirm_union_one :: #force_inline proc(
-	value: $T,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
-	}
-	return value, err
-}
-
-assert_union_one :: #force_inline proc(
-	value: $T,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> T where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
-	}
-	return value
-}
-
-check_union_one :: #force_inline proc(
-	value: $T,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(err == E{}, message, loc, err)
-	} else {
-		warn(err == E{}, message, loc, err)
-	}
-	return value, err
-}
-
-assume_union_one :: #force_inline proc(
-	value: $T,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> T where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		warn(err == E{}, message, loc, err)
-	}
-	return value
-}
-
-expect_union_one :: #force_inline proc(
-	t: ^testing.T,
-	value: $T,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	T,
-	bool,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) #optional_ok {
-	ok := err == E{}
-	test(t, ok, message, loc, err)
-	return value, ok
-}
-
-is_ok_union_one :: #force_inline proc(value: $T, err: $E) -> (T, bool) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
-	return value, err == E{}
 }
 
 ensure_union_two :: #force_inline proc(
@@ -1531,124 +363,6 @@ ensure_union_two :: #force_inline proc(
 	intrinsics.type_has_nil(E) {
 	panic(err == E{}, message, loc, err)
 	return first, second
-}
-
-verify_union_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(err == E{}, message, loc, err)
-	} else {
-		panic(err == E{}, message, loc, err)
-	}
-	return first, second, err
-}
-
-confirm_union_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
-	}
-	return first, second, err
-}
-
-assert_union_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
-	}
-	return first, second
-}
-
-check_union_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(err == E{}, message, loc, err)
-	} else {
-		warn(err == E{}, message, loc, err)
-	}
-	return first, second, err
-}
-
-assume_union_two :: #force_inline proc(
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		warn(err == E{}, message, loc, err)
-	}
-	return first, second
-}
-
-expect_union_two :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	bool,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	ok := err == E{}
-	test(t, ok, message, loc, err)
-	return first, second, ok
-}
-
-is_ok_union_two :: #force_inline proc(first: $A, second: $B, err: $E) -> (A, B, bool) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
-	return first, second, err == E{}
 }
 
 ensure_union_three :: #force_inline proc(
@@ -1668,6 +382,263 @@ ensure_union_three :: #force_inline proc(
 	return first, second, third
 }
 
+ensure_union_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	panic(err == E{}, message, loc, err)
+	return first, second, third, fourth
+}
+
+ensure_rawptr :: #force_inline proc(value: rawptr, message := "", loc := #caller_location) {
+	panic(value != nil, message, loc, value)
+}
+
+ensure_size :: #force_inline proc(#any_int value: size, message := "", loc := #caller_location) {
+	panic(value > 0, message, loc, value)
+}
+
+@(require_results)
+verify_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
+	when VERIFY_PANIC {
+		panic(bool(condition), message, loc)
+	} else when VERIFY_FATAL {
+		fatal(bool(condition), message, loc)
+	}
+	return bool(condition)
+}
+
+@(require_results)
+verify_bool_one :: #force_inline proc(
+	value: $T,
+	ok: $B,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	T,
+	bool,
+) where intrinsics.type_is_boolean(B) {
+	when VERIFY_PANIC {
+		panic(bool(ok), message, loc)
+	} else when VERIFY_FATAL {
+		fatal(bool(ok), message, loc)
+	}
+	return value, bool(ok)
+}
+
+@(require_results)
+verify_bool_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	ok: $C,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	bool,
+) where intrinsics.type_is_boolean(C) {
+	when VERIFY_PANIC {
+		panic(bool(ok), message, loc)
+	} else when VERIFY_FATAL {
+
+		fatal(bool(ok), message, loc)
+	}
+	return first, second, bool(ok)
+}
+
+@(require_results)
+verify_bool_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	ok: $D,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	bool,
+) where intrinsics.type_is_boolean(D) {
+	when VERIFY_PANIC {
+		panic(bool(ok), message, loc)
+	} else when VERIFY_FATAL {
+		fatal(bool(ok), message, loc)
+	}
+	return first, second, third, bool(ok)
+}
+
+@(require_results)
+verify_bool_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	ok: $E,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+	bool,
+) where intrinsics.type_is_boolean(E) {
+	when VERIFY_PANIC {
+		panic(bool(ok), message, loc)
+	} else when VERIFY_FATAL {
+		fatal(bool(ok), message, loc)
+	}
+	return first, second, third, fourth, bool(ok)
+}
+
+@(require_results)
+verify_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_enum(E) {
+	when VERIFY_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(cast(int)err == 0, message, loc, err)
+	}
+	return err
+}
+
+@(require_results)
+verify_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> (T, E) where intrinsics.type_is_enum(E) {
+	when VERIFY_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(cast(int)err == 0, message, loc, err)
+	}
+	return value, err
+}
+
+@(require_results)
+verify_enum_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when VERIFY_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, err
+}
+
+@(require_results)
+verify_enum_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when VERIFY_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, err
+}
+
+@(require_results)
+verify_enum_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when VERIFY_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, fourth, err
+}
+
+@(require_results)
+verify_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when VERIFY_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(err == E{}, message, loc, err)
+	}
+	return err
+}
+
+@(require_results)
+verify_union_one :: #force_inline proc(
+	value: $T,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	T,
+	E,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when VERIFY_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(err == E{}, message, loc, err)
+	}
+	return value, err
+}
+@(require_results)
+verify_union_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	E,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when VERIFY_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(err == E{}, message, loc, err)
+	}
+	return first, second, err
+}
+
+@(require_results)
 verify_union_three :: #force_inline proc(
 	first: $A,
 	second: $B,
@@ -1682,12 +653,304 @@ verify_union_three :: #force_inline proc(
 	E,
 ) where intrinsics.type_is_union(E) &&
 	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(err == E{}, message, loc, err)
-	} else {
+	when VERIFY_PANIC {
 		panic(err == E{}, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(err == E{}, message, loc, err)
 	}
 	return first, second, third, err
+}
+
+@(require_results)
+verify_union_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+	E,
+) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when VERIFY_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when VERIFY_FATAL {
+		fatal(err == E{}, message, loc, err)
+	}
+	return first, second, third, fourth, err
+}
+
+@(require_results)
+verify_rawptr :: #force_inline proc(value: rawptr, message := "", loc := #caller_location) -> (rawptr, bool) {
+	when VERIFY_PANIC {
+		panic(value != nil, message, loc, value)
+	} else when VERIFY_FATAL {
+		fatal(value != nil, message, loc, value)
+	}
+	return value, value != nil
+}
+
+@(require_results)
+verify_size :: #force_inline proc(#any_int value: size, message := "", loc := #caller_location) -> (size, bool) {
+	when VERIFY_PANIC {
+		panic(value > 0, message, loc, value)
+	} else when VERIFY_FATAL {
+		fatal(value > 0, message, loc, value)
+	}
+	return value, value > 0
+}
+
+confirm_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
+	when CONFIRM_PANIC {
+		panic(bool(condition), message, loc)
+	} else when CONFIRM_ERROR {
+		error(bool(condition), message, loc)
+	} else when CONFIRM_IGNORE {
+		ignore(bool(condition), message, loc)
+	}
+	return bool(condition)
+}
+
+confirm_bool_one :: #force_inline proc(
+	value: $T,
+	ok: $B,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	T,
+	bool,
+) where intrinsics.type_is_boolean(B) {
+	when CONFIRM_PANIC {
+		panic(bool(ok), message, loc)
+	} else when CONFIRM_ERROR {
+		error(bool(ok), message, loc)
+	} else when CONFIRM_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return value, bool(ok)
+}
+
+confirm_bool_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	ok: $C,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	bool,
+) where intrinsics.type_is_boolean(C) {
+	when CONFIRM_PANIC {
+		panic(bool(ok), message, loc)
+	} else when CONFIRM_ERROR {
+		error(bool(ok), message, loc)
+	} else when CONFIRM_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, bool(ok)
+}
+
+confirm_bool_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	ok: $D,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	bool,
+) where intrinsics.type_is_boolean(D) {
+	when CONFIRM_PANIC {
+		panic(bool(ok), message, loc)
+	} else when CONFIRM_ERROR {
+		error(bool(ok), message, loc)
+	} else when CONFIRM_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third, bool(ok)
+}
+
+confirm_bool_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	ok: $E,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+	bool,
+) where intrinsics.type_is_boolean(E) {
+	when CONFIRM_PANIC {
+		panic(bool(ok), message, loc)
+	} else when CONFIRM_ERROR {
+		error(bool(ok), message, loc)
+	} else when CONFIRM_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third, fourth, bool(ok)
+}
+
+confirm_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_enum(E) {
+	when CONFIRM_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return err
+}
+
+confirm_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> (T, E) where intrinsics.type_is_enum(E) {
+	when CONFIRM_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return value, err
+}
+
+confirm_enum_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when CONFIRM_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, err
+}
+
+confirm_enum_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when CONFIRM_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, err
+}
+
+confirm_enum_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when CONFIRM_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, fourth, err
+}
+
+confirm_union_zero :: #force_inline proc(
+	err: $E,
+	message := "",
+	loc := #caller_location,
+) -> E where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when CONFIRM_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return err
+}
+
+confirm_union_one :: #force_inline proc(
+	value: $T,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	T,
+	E,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when CONFIRM_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return value, err
+}
+
+confirm_union_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	E,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when CONFIRM_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when CONFIRM_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second, err
 }
 
 confirm_union_three :: #force_inline proc(
@@ -1704,152 +967,14 @@ confirm_union_three :: #force_inline proc(
 	E,
 ) where intrinsics.type_is_union(E) &&
 	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
+	when CONFIRM_PANIC {
 		panic(err == E{}, message, loc, err)
-	} else {
+	} else when CONFIRM_ERROR {
 		error(err == E{}, message, loc, err)
-	}
-	return first, second, third, err
-}
-
-assert_union_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
-	}
-	return first, second, third
-}
-
-check_union_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
+	} else when CONFIRM_IGNORE {
 		ignore(err == E{}, message, loc, err)
-	} else {
-		warn(err == E{}, message, loc, err)
 	}
 	return first, second, third, err
-}
-
-assume_union_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		warn(err == E{}, message, loc, err)
-	}
-	return first, second, third
-}
-
-expect_union_three :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	ok := err == E{}
-	test(t, ok, message, loc, err)
-	return first, second, third, ok
-}
-
-is_ok_union_three :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	err: $E,
-) -> (
-	A,
-	B,
-	C,
-	bool,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	return first, second, third, err == E{}
-}
-
-ensure_union_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	panic(err == E{}, message, loc, err)
-	return first, second, third, fourth
-}
-
-verify_union_four :: #force_inline proc(
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		fatal(err == E{}, message, loc, err)
-	} else {
-		panic(err == E{}, message, loc, err)
-	}
-	return first, second, third, fourth, err
 }
 
 confirm_union_four :: #force_inline proc(
@@ -1866,17 +991,205 @@ confirm_union_four :: #force_inline proc(
 	C,
 	D,
 	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
+) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when CONFIRM_PANIC {
 		panic(err == E{}, message, loc, err)
-	} else {
+	} else when CONFIRM_ERROR {
 		error(err == E{}, message, loc, err)
+	} else when CONFIRM_IGNORE {
+		ignore(err == E{}, message, loc, err)
 	}
 	return first, second, third, fourth, err
 }
 
-assert_union_four :: #force_inline proc(
+confirm_rawptr :: #force_inline proc(value: rawptr, message := "", loc := #caller_location) -> (rawptr, bool) {
+	when CONFIRM_PANIC {
+		panic(value != nil, message, loc, value)
+	} else when CONFIRM_ERROR {
+		error(value != nil, message, loc, value)
+	} else when CONFIRM_IGNORE {
+		ignore(value != nil, message, loc, value)
+	}
+	return value, value != nil
+}
+
+confirm_size :: #force_inline proc(#any_int value: size, message := "", loc := #caller_location) -> (size, bool) {
+	when CONFIRM_PANIC {
+		panic(value > 0, message, loc, value)
+	} else when CONFIRM_ERROR {
+		error(value > 0, message, loc, value)
+	} else when CONFIRM_IGNORE {
+		ignore(value > 0, message, loc, value)
+	}
+	return value, value > 0
+}
+
+check_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) -> bool where intrinsics.type_is_boolean(B) {
+	when CHECK_WARN {
+		warn(bool(condition), message, loc)
+	} else when CHECK_INFO {
+		info(bool(condition), message, loc)
+	} else when CHECK_IGNORE {
+		ignore(bool(condition), message, loc)
+	}
+	return bool(condition)
+}
+
+check_bool_one :: #force_inline proc(
+	value: $T,
+	ok: $B,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	T,
+	bool,
+) where intrinsics.type_is_boolean(B) {
+	when CHECK_WARN {
+		warn(bool(ok), message, loc)
+	} else when CHECK_INFO {
+		info(bool(ok), message, loc)
+	} else when CHECK_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return value, bool(ok)
+}
+
+check_bool_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	ok: $C,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	bool,
+) where intrinsics.type_is_boolean(C) {
+	when CHECK_WARN {
+		warn(bool(ok), message, loc)
+	} else when CHECK_INFO {
+		info(bool(ok), message, loc)
+	} else when CHECK_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, bool(ok)
+}
+
+check_bool_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	ok: $D,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	bool,
+) where intrinsics.type_is_boolean(D) {
+	when CHECK_WARN {
+		warn(bool(ok), message, loc)
+	} else when CHECK_INFO {
+		info(bool(ok), message, loc)
+	} else when CHECK_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third, bool(ok)
+}
+
+check_bool_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	ok: $E,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+	bool,
+) where intrinsics.type_is_boolean(E) {
+	when CHECK_WARN {
+		warn(bool(ok), message, loc)
+	} else when CHECK_INFO {
+		info(bool(ok), message, loc)
+	} else when CHECK_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third, fourth, bool(ok)
+}
+
+check_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_enum(E) {
+	when CHECK_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when CHECK_INFO {
+		info(cast(int)err == 0, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return err
+}
+
+check_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> (T, E) where intrinsics.type_is_enum(E) {
+	when CHECK_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when CHECK_INFO {
+		info(cast(int)err == 0, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return value, err
+}
+
+check_enum_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when CHECK_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when CHECK_INFO {
+		info(cast(int)err == 0, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, err
+}
+
+check_enum_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when CHECK_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when CHECK_INFO {
+		info(cast(int)err == 0, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, err
+}
+
+check_enum_four :: #force_inline proc(
 	first: $A,
 	second: $B,
 	third: $C,
@@ -1889,14 +1202,93 @@ assert_union_four :: #force_inline proc(
 	B,
 	C,
 	D,
+	E,
+) where intrinsics.type_is_enum(E) {
+	when CHECK_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when CHECK_INFO {
+		info(cast(int)err == 0, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, fourth, err
+}
+
+check_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) -> E where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when CHECK_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when CHECK_INFO {
+		info(err == E{}, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return err
+}
+
+check_union_one :: #force_inline proc(
+	value: $T,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	T,
+	E,
 ) where intrinsics.type_is_union(E) &&
 	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
-		panic(err == E{}, message, loc, err)
-	} else {
-		error(err == E{}, message, loc, err)
+	when CHECK_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when CHECK_INFO {
+		info(err == E{}, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(err == E{}, message, loc, err)
 	}
-	return first, second, third, fourth
+	return value, err
+}
+
+check_union_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	E,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when CHECK_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when CHECK_INFO {
+		info(err == E{}, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second, err
+}
+
+check_union_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	E,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when CHECK_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when CHECK_INFO {
+		info(err == E{}, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second, third, err
 }
 
 check_union_four :: #force_inline proc(
@@ -1913,14 +1305,525 @@ check_union_four :: #force_inline proc(
 	C,
 	D,
 	E,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_RELEASE {
-		ignore(err == E{}, message, loc, err)
-	} else {
+) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when CHECK_WARN {
 		warn(err == E{}, message, loc, err)
+	} else when CHECK_INFO {
+		info(err == E{}, message, loc, err)
+	} else when CHECK_IGNORE {
+		ignore(err == E{}, message, loc, err)
 	}
 	return first, second, third, fourth, err
+}
+
+check_rawptr :: #force_inline proc(value: rawptr, message := "", loc := #caller_location) -> (rawptr, bool) {
+	when CHECK_WARN {
+		warn(value != nil, message, loc, value)
+	} else when CHECK_INFO {
+		info(value != nil, message, loc, value)
+	} else when CHECK_IGNORE {
+		ignore(value != nil, message, loc, value)
+	}
+	return value, value != nil
+}
+
+check_size :: #force_inline proc(#any_int value: size, message := "", loc := #caller_location) -> (size, bool) {
+	when CHECK_WARN {
+		warn(value > 0, message, loc, value)
+	} else when CHECK_INFO {
+		info(value > 0, message, loc, value)
+	} else when CHECK_IGNORE {
+		ignore(value > 0, message, loc, value)
+	}
+	return value, value > 0
+}
+
+assert_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) where intrinsics.type_is_boolean(B) {
+	when ASSERT_PANIC {
+		panic(bool(condition), message, loc)
+	} else when ASSERT_ERROR {
+		error(bool(condition), message, loc)
+	} else when ASSERT_IGNORE {
+		ignore(bool(condition), message, loc)
+	}
+}
+
+assert_bool_one :: #force_inline proc(value: $T, ok: $B, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_boolean(B) {
+	when ASSERT_PANIC {
+		panic(bool(ok), message, loc)
+	} else when ASSERT_ERROR {
+		error(bool(ok), message, loc)
+	} else when ASSERT_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return value
+}
+
+assert_bool_two :: #force_inline proc(first: $A, second: $B, ok: $C, message := "", loc := #caller_location) -> (A, B) where intrinsics.type_is_boolean(C) {
+	when ASSERT_PANIC {
+		panic(bool(ok), message, loc)
+	} else when ASSERT_ERROR {
+		error(bool(ok), message, loc)
+	} else when ASSERT_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second
+}
+
+assert_bool_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	ok: $D,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+) where intrinsics.type_is_boolean(D) {
+	when ASSERT_PANIC {
+		panic(bool(ok), message, loc)
+	} else when ASSERT_ERROR {
+		error(bool(ok), message, loc)
+	} else when ASSERT_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third
+}
+
+assert_bool_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	ok: $E,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+) where intrinsics.type_is_boolean(E) {
+	when ASSERT_PANIC {
+		panic(bool(ok), message, loc)
+	} else when ASSERT_ERROR {
+		error(bool(ok), message, loc)
+	} else when ASSERT_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third, fourth
+}
+
+assert_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_enum(E) {
+	when ASSERT_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+}
+
+assert_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_enum(E) {
+	when ASSERT_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return value
+}
+
+assert_enum_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+) where intrinsics.type_is_enum(E) {
+	when ASSERT_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second
+}
+
+assert_enum_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+) where intrinsics.type_is_enum(E) {
+	when ASSERT_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third
+}
+
+assert_enum_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+) where intrinsics.type_is_enum(E) {
+	when ASSERT_PANIC {
+		panic(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(cast(int)err == 0, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, fourth
+}
+
+assert_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when ASSERT_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+}
+
+assert_union_one :: #force_inline proc(
+	value: $T,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> T where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when ASSERT_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return value
+}
+
+assert_union_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when ASSERT_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second
+}
+
+assert_union_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when ASSERT_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second, third
+}
+
+assert_union_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when ASSERT_PANIC {
+		panic(err == E{}, message, loc, err)
+	} else when ASSERT_ERROR {
+		error(err == E{}, message, loc, err)
+	} else when ASSERT_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second, third, fourth
+}
+
+assert_rawptr :: #force_inline proc(value: rawptr, message := "", loc := #caller_location) {
+	when ASSERT_PANIC {
+		panic(value != nil, message, loc, value)
+	} else when ASSERT_ERROR {
+		error(value != nil, message, loc, value)
+	} else when ASSERT_IGNORE {
+		ignore(value != nil, message, loc, value)
+	}
+}
+
+assert_size :: #force_inline proc(#any_int value: size, message := "", loc := #caller_location) {
+	when ASSERT_PANIC {
+		panic(value > 0, message, loc, value)
+	} else when ASSERT_ERROR {
+		error(value > 0, message, loc, value)
+	} else when ASSERT_IGNORE {
+		ignore(value > 0, message, loc, value)
+	}
+}
+
+assume_bool_zero :: #force_inline proc(condition: $B, message := "", loc := #caller_location) where intrinsics.type_is_boolean(B) {
+	when ASSUME_WARN {
+		warn(bool(condition), message, loc)
+	} else when ASSUME_IGNORE {
+		ignore(bool(condition), message, loc)
+	}
+}
+
+assume_bool_one :: #force_inline proc(value: $T, ok: $B, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_boolean(B) {
+	when ASSUME_WARN {
+		warn(bool(ok), message, loc)
+	} else when ASSUME_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return value
+}
+
+assume_bool_two :: #force_inline proc(first: $A, second: $B, ok: $C, message := "", loc := #caller_location) -> (A, B) where intrinsics.type_is_boolean(C) {
+	when ASSUME_WARN {
+		warn(bool(ok), message, loc)
+	} else when ASSUME_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second
+}
+
+assume_bool_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	ok: $D,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+) where intrinsics.type_is_boolean(D) {
+	when ASSUME_WARN {
+		warn(bool(ok), message, loc)
+	} else when ASSUME_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third
+}
+
+assume_bool_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	ok: $E,
+	message := "",
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+) where intrinsics.type_is_boolean(E) {
+	when ASSUME_WARN {
+		warn(bool(ok), message, loc)
+	} else when ASSUME_IGNORE {
+		ignore(bool(ok), message, loc)
+	}
+	return first, second, third, fourth
+}
+
+assume_enum_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_enum(E) {
+	when ASSUME_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+}
+
+assume_enum_one :: #force_inline proc(value: $T, err: $E, message := #caller_expression, loc := #caller_location) -> T where intrinsics.type_is_enum(E) {
+	when ASSUME_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return value
+}
+
+assume_enum_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+) where intrinsics.type_is_enum(E) {
+	when ASSUME_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second
+}
+
+assume_enum_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+) where intrinsics.type_is_enum(E) {
+	when ASSUME_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third
+}
+
+assume_enum_four :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	fourth: $D,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+	D,
+) where intrinsics.type_is_enum(E) {
+	when ASSUME_WARN {
+		warn(cast(int)err == 0, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(cast(int)err == 0, message, loc, err)
+	}
+	return first, second, third, fourth
+}
+
+assume_union_zero :: #force_inline proc(err: $E, message := "", loc := #caller_location) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when ASSUME_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+}
+
+assume_union_one :: #force_inline proc(
+	value: $T,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> T where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when ASSUME_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return value
+}
+
+assume_union_two :: #force_inline proc(
+	first: $A,
+	second: $B,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when ASSUME_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second
+}
+
+assume_union_three :: #force_inline proc(
+	first: $A,
+	second: $B,
+	third: $C,
+	err: $E,
+	message := #caller_expression,
+	loc := #caller_location,
+) -> (
+	A,
+	B,
+	C,
+) where intrinsics.type_is_union(E) &&
+	intrinsics.type_has_nil(E) {
+	when ASSUME_WARN {
+		warn(err == E{}, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(err == E{}, message, loc, err)
+	}
+	return first, second, third
 }
 
 assume_union_four :: #force_inline proc(
@@ -1936,49 +1839,72 @@ assume_union_four :: #force_inline proc(
 	B,
 	C,
 	D,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	when EKHOS_IS_DEBUG {
+) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	when ASSUME_WARN {
 		warn(err == E{}, message, loc, err)
+	} else when ASSUME_IGNORE {
+		ignore(err == E{}, message, loc, err)
 	}
 	return first, second, third, fourth
 }
 
-expect_union_four :: #force_inline proc(
-	t: ^testing.T,
-	first: $A,
-	second: $B,
-	third: $C,
-	fourth: $D,
-	err: $E,
-	message := #caller_expression,
-	loc := #caller_location,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
-	ok := err == E{}
-	test(t, ok, message, loc, err)
-	return first, second, third, fourth, ok
+assume_rawptr :: #force_inline proc(value: rawptr, message := "", loc := #caller_location) {
+	when ASSUME_WARN {
+		warn(value != nil, message, loc, value)
+	} else when ASSUME_IGNORE {
+		ignore(value != nil, message, loc, value)
+	}
 }
 
-is_ok_union_four :: #force_inline proc(
+assume_size :: #force_inline proc(#any_int value: size, message := "", loc := #caller_location) {
+	when ASSUME_WARN {
+		warn(value > 0, message, loc, value)
+	} else when ASSUME_IGNORE {
+		ignore(value > 0, message, loc, value)
+	}
+}
+
+is_ok_enum_zero :: #force_inline proc(err: $E) -> bool where intrinsics.type_is_enum(E) {
+	return cast(int)err == 0
+}
+
+is_ok_enum_one :: #force_inline proc(value: $T, err: $E) -> (T, bool) where intrinsics.type_is_enum(E) {
+	return value, cast(int)err == 0
+}
+
+is_ok_enum_two :: #force_inline proc(first: $A, second: $B, err: $E) -> (A, B, bool) where intrinsics.type_is_enum(E) {
+	return first, second, cast(int)err == 0
+}
+
+is_ok_enum_three :: #force_inline proc(first: $A, second: $B, third: $C, err: $E) -> (A, B, C, bool) where intrinsics.type_is_enum(E) {
+	return first, second, third, cast(int)err == 0
+}
+
+is_ok_enum_four :: #force_inline proc(first: $A, second: $B, third: $C, fourth: $D, err: $E) -> (A, B, C, D, bool) where intrinsics.type_is_enum(E) {
+	return first, second, third, fourth, cast(int)err == 0
+}
+
+is_ok_union_zero :: #force_inline proc(err: $E) -> bool where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	return err == E{}
+}
+
+is_ok_union_one :: #force_inline proc(value: $T, err: $E) -> (T, bool) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	return value, err == E{}
+}
+
+is_ok_union_two :: #force_inline proc(first: $A, second: $B, err: $E) -> (A, B, bool) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	return first, second, err == E{}
+}
+
+is_ok_union_three :: #force_inline proc(
 	first: $A,
 	second: $B,
 	third: $C,
-	fourth: $D,
 	err: $E,
-) -> (
-	A,
-	B,
-	C,
-	D,
-	bool,
-) where intrinsics.type_is_union(E) &&
-	intrinsics.type_has_nil(E) {
+) -> (A, B, C, bool) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
+	return first, second, third, err == E{}
+}
+
+is_ok_union_four :: #force_inline proc(first: $A, second: $B, third: $C, fourth: $D, err: $E) -> (A, B, C, D, bool) where intrinsics.type_is_union(E) && intrinsics.type_has_nil(E) {
 	return first, second, third, fourth, err == E{}
 }
