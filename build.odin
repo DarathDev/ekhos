@@ -166,9 +166,9 @@ main :: proc() {
 	}
 	switch EKHOS_BUILD_TYPE {
 	case "lib":
-		build_lib(&options)
+		if !build_lib(&options) do os.exit(1)
 	case "test":
-		build_test(&options)
+		if !build_test(&options) do os.exit(1)
 	}
 }
 
