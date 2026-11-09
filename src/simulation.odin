@@ -346,15 +346,23 @@ sort_scatters_by_distance_interval :: proc(
 	defer assert(distanceRange.maxDistance - distanceRange.minDistance < 10)
 
 	transmitBounds := DEFAULT_DISTANCE_BOUNDS
+	minTransmitDelay, maxTransmitDelay: f32 = math.INF_F32, -math.INF_F32
 	for transmission in transmissions {
 		for transmissionElement in transmission.elements {
 			distance_bounds_add_element(&transmitBounds, elements[transmissionElement.index])
+			delay := transmissionElement.delay + elements.delay[transmissionElement.index]
+			minTransmitDelay = min(minTransmitDelay, delay)
+			maxTransmitDelay = max(maxTransmitDelay, delay)
 		}
 	}
 	receiveBounds := DEFAULT_DISTANCE_BOUNDS
+	minReceiveDelay, maxReceiveDelay: f32 = math.INF_F32, -math.INF_F32
 	for receiveChannel in receiveChannels {
 		for receiveChannelElement in receiveChannel.elements {
 			distance_bounds_add_element(&receiveBounds, elements[receiveChannelElement.index])
+			delay := receiveChannelElement.delay + elements.delay[receiveChannelElement.index]
+			minReceiveDelay = min(minReceiveDelay, delay)
+			maxReceiveDelay = max(maxReceiveDelay, delay)
 		}
 	}
 
@@ -397,10 +405,22 @@ sort_scatters_by_distance_interval :: proc(
 		slice.sort_from_permutation_indices(scatters, indices)
 	}
 
-	distanceRange = {minTransmitDistance + minReceiveDistance, maxTransmitDistance + maxReceiveDistance}
-	transmitSampleRange := distance_range_to_sample_range({minTransmitDistance, maxTransmitDistance}, settings.speedOfSound, settings.samplingFrequency, 0)
-	receiveSampleRange := distance_range_to_sample_range({minReceiveDistance, maxReceiveDistance}, settings.speedOfSound, settings.samplingFrequency, 0)
-	apertureSampleCount = u32(max(sample_range_sample_count(transmitSampleRange), sample_range_sample_count(receiveSampleRange))) + 1
+	transmitDistanceRange := DistanceRange {
+		minTransmitDistance + minTransmitDelay * settings.speedOfSound,
+		maxTransmitDistance + maxTransmitDelay * settings.speedOfSound,
+	}
+	receiveDistanceRange := DistanceRange {
+		minReceiveDistance + minReceiveDelay * settings.speedOfSound,
+		maxReceiveDistance + maxReceiveDelay * settings.speedOfSound,
+	}
+	distanceRange = {
+		transmitDistanceRange.minDistance + receiveDistanceRange.minDistance,
+		transmitDistanceRange.maxDistance + receiveDistanceRange.maxDistance,
+	}
+	transmitSampleRange := distance_range_to_sample_range(transmitDistanceRange, settings.speedOfSound, settings.samplingFrequency, 0)
+	receiveSampleRange := distance_range_to_sample_range(receiveDistanceRange, settings.speedOfSound, settings.samplingFrequency, 0)
+	// Aperture sampling extends the support by half a sample on both sides.
+	apertureSampleCount = u32(max(sample_range_sample_count(transmitSampleRange), sample_range_sample_count(receiveSampleRange))) + 2
 	return
 }
 
