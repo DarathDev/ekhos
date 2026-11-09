@@ -295,8 +295,8 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 	utility.prof_begin("Allocate")
 
 	elementImpulses: []ImpulseResponse
-	transmissionImpulse := make_aligned([]f32, sampleCount, 16, context.allocator)
-	receiveChannelImpulse := make_aligned([]f32, sampleCount, 16, context.allocator)
+	transmissionImpulse := make_aligned([]f32, simulator.info.apertureSampleCount, 16, context.allocator)
+	receiveChannelImpulse := make_aligned([]f32, simulator.info.apertureSampleCount, 16, context.allocator)
 	transmissionSampleRanges: [1]SampleRange
 	receiveChannelSampleRanges: [1]SampleRange
 	scatterData: [1]CpuScatterData
@@ -383,9 +383,6 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 						elementImpulses[int(localScatterIndex) * len(elements):][:len(elements)],
 						transmissionSampleRanges[:],
 						transmissionImpulse,
-						sampleCount,
-						1,
-						0,
 						samplingFrequency,
 						0,
 						cumulative,
@@ -395,6 +392,7 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 					scatterData[0].transmissionSampleRanges = transmissionSampleRanges[:]
 					scatterData[0].transmissionImpulses = transmissionImpulse
 					transmissionSampleCount := sample_range_sample_count(transmissionSampleRanges[0])
+					if transmissionSampleCount == 0 do continue
 					for receiveChannelIndex in 0 ..< receiveChannelCount {
 						if receiveChannelIndex + dataLinePrefetchDistance < receiveChannelCount {
 							intrinsics.prefetch_write_data(
@@ -411,9 +409,6 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 							elementImpulses[int(localScatterIndex) * len(elements):][:len(elements)],
 							receiveChannelSampleRanges[:],
 							receiveChannelImpulse,
-							sampleCount,
-							1,
-							0,
 							samplingFrequency,
 							startTime,
 							cumulative,
@@ -423,6 +418,7 @@ simulate_cpu_lane :: proc(simulator: ^cpuSimulator, lane: ^ekhos_thread.Lane) ->
 						scatterData[0].receiveChannelSampleRanges = receiveChannelSampleRanges[:]
 						scatterData[0].receiveChannelImpulses = receiveChannelImpulse
 						receiveChannelSampleCount := sample_range_sample_count(receiveChannelSampleRanges[0])
+						if receiveChannelSampleCount == 0 do continue
 						scatterData[0].fftCount = auto_cast pffft.adjust_n(auto_cast (transmissionSampleCount + receiveChannelSampleCount - 1))
 						when CPU_STAGE_TIMING do time.stopwatch_start(&stageStopwatch)
 						if int(scatterData[0].fftCount) < CPU_TIME_DOMAIN_THRESHOLD {
@@ -495,43 +491,45 @@ coalesce_impulses :: proc(
 	elementImpulses: []ImpulseResponse,
 	sampleRanges: []SampleRange,
 	impulses: []f32,
-	sampleCount: i32,
-	batchElementSetCount: i32,
-	batchElementSetStart: int,
 	samplingFrequency, startTime: f32,
 	cumulative: bool,
 	$applyCumulativeOffset: bool,
 ) {
+	assert(len(elementSets) == 1 && len(batchScatters) == 1 && len(sampleRanges) == 1)
 	for elementSet, elementSetIndex in elementSets {
 		utility.prof_begin("Element Set Impulse")
 		for _, scatterIndex in batchScatters {
 			scatterElementImpulses := elementImpulses[scatterIndex * auto_cast len(elements):][:len(elements)]
 			utility.prof_scoped("Scatterer Impulse")
-			utility.prof_begin("Precalculations")
+			elementSetImpulse: []f32
 			elementSetSampleRange: SampleRange = {max(i32), min(i32)}
-			for element, elementIndex in elementSet.elements {
-				if elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE < len(elementSet.elements) {
-					intrinsics.prefetch_read_data(
-						rawptr(&scatterElementImpulses[elementSet.elements[elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE].index]),
-						3,
-					)
-				}
-				elementImpulse := scatterElementImpulses[element.index]
-				elementImpulse.rect += element.delay * samplingFrequency
+			sampleRanges[elementSetIndex] = {0, -1}
+			{
+				utility.prof_scoped("Precalculations")
+				for element, elementIndex in elementSet.elements {
+					if elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE < len(elementSet.elements) {
+						intrinsics.prefetch_read_data(
+							rawptr(&scatterElementImpulses[elementSet.elements[elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE].index]),
+							3,
+						)
+					}
+					elementImpulse := scatterElementImpulses[element.index]
+					elementImpulse.rect += element.delay * samplingFrequency
 
-				elementImpulse.scale *= element.apodization
-				elementImpulse.rect -= startTime * samplingFrequency
-				if applyCumulativeOffset && cumulative do elementImpulse.rect -= 1
-				if elementImpulse.scale == 0 do continue
-				elementSetSampleRange.minSample = min(elementSetSampleRange.minSample, i32(linalg.floor(elementImpulse.rect.x - 0.5)))
-				elementSetSampleRange.maxSample = max(elementSetSampleRange.maxSample, i32(linalg.ceil(elementImpulse.rect.w + 0.5)))
+					elementImpulse.scale *= element.apodization
+					elementImpulse.rect -= startTime * samplingFrequency
+					if applyCumulativeOffset && cumulative do elementImpulse.rect -= 1
+					if elementImpulse.scale == 0 do continue
+					elementSetSampleRange.minSample = min(elementSetSampleRange.minSample, i32(linalg.floor(elementImpulse.rect.x - 0.5)))
+					elementSetSampleRange.maxSample = max(elementSetSampleRange.maxSample, i32(linalg.ceil(elementImpulse.rect.w + 0.5)))
+				}
+				if elementSetSampleRange.minSample > elementSetSampleRange.maxSample do continue
+				sampleRanges[elementSetIndex] = elementSetSampleRange
+				elementSetSampleCount := sample_range_sample_count(elementSetSampleRange)
+				utility.panic(int(elementSetSampleCount) <= len(impulses), "Aperture impulse exceeds planned sample capacity")
+				elementSetImpulse = impulses[:elementSetSampleCount]
+				slice.zero(elementSetImpulse)
 			}
-			sampleRanges[scatterIndex * int(batchElementSetCount) + batchElementSetStart + elementSetIndex] = elementSetSampleRange
-			elementSetSampleCount := sample_range_sample_count(elementSetSampleRange)
-			elementSetImpulse := impulses[(scatterIndex * int(batchElementSetCount) + batchElementSetStart + elementSetIndex) *
-			int(sampleCount):][:elementSetSampleCount]
-			slice.zero(elementSetImpulse)
-			utility.prof_end()
 			utility.prof_begin("Sampling")
 			for element, elementIndex in elementSet.elements {
 				if elementIndex + CPU_ELEMENT_SET_PREFETCH_DISTANCE < len(elementSet.elements) {
@@ -769,7 +767,7 @@ get_spatial_impulse_response :: proc(
 	impulseResponse: ImpulseResponse,
 ) {
 	scatterPosition := scatter.position - element.position
-	scatterPosition = linalg.mul(conj(transmute(quaternion128) element.orientation), scatterPosition)
+	scatterPosition = linalg.mul(conj(transmute(quaternion128)element.orientation), scatterPosition)
 	dieProjection := linalg.abs(element.size * scatterPosition.xy)
 	distance := linalg.length(scatterPosition)
 
