@@ -111,6 +111,8 @@ main :: proc() {
 			cpuStageTiming = true
 		case "-plan-stage-timing":
 			planStageTiming = true
+		case "-align-start-time-to-sample":
+			append(&options, OdinBuildOption{flag = "define", value = {"ALIGN_START_TIME_TO_SAMPLE=true"}})
 		case "-all-stage-timing":
 			cpuStageTiming = true
 			gpuStageTiming = true

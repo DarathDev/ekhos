@@ -22,6 +22,7 @@ assume :: utility.assume
 
 ENABLE_RENDERDOC :: bool(#config(ENABLE_RENDERDOC, true))
 PLAN_STAGE_TIMING :: bool(#config(PLAN_STAGE_TIMING, false))
+ALIGN_START_TIME_TO_SAMPLE :: bool(#config(ALIGN_START_TIME_TO_SAMPLE, false))
 GIT_HASH :: #config(GIT_HASH, "unknown")
 
 PULSE_CONV_SAMPLE_WORKGROUP_SIZE :: 64
@@ -231,6 +232,12 @@ plan_simulation :: proc(
 	settings.sampleCount += sampleCountPadding
 	settings.startTime -= sampleCountPadding / 4 / settings.samplingFrequency
 
+	when ALIGN_START_TIME_TO_SAMPLE {
+		alignedStartTime := f32(math.floor(f64(settings.startTime) * f64(settings.samplingFrequency)) / f64(settings.samplingFrequency))
+		if alignedStartTime < settings.startTime do settings.sampleCount += 1
+		settings.startTime = alignedStartTime
+	}
+
 	maxTemporalTail: i32
 	for transmission in transmissions {
 		transmissionLength := response_length(impulses, transmission.impulse) + response_length(excitations, transmission.excitation) - 1
@@ -292,9 +299,9 @@ response_length :: proc(responses: $T, index: u16) -> i32 {
 
 normalize_element_orientations :: proc(elements: #soa[]RectangularElement) {
 	for elementIndex in 0 ..< len(elements) {
-		orientation := transmute(quaternion128) elements.orientation[elementIndex]
+		orientation := transmute(quaternion128)elements.orientation[elementIndex]
 		assert(linalg.dot(orientation, orientation) > linalg.F32_EPSILON * linalg.F32_EPSILON, "Element orientation must have non-zero length")
-		elements.orientation[elementIndex] = transmute([4]f32) linalg.normalize(orientation)
+		elements.orientation[elementIndex] = transmute([4]f32)linalg.normalize(orientation)
 	}
 }
 

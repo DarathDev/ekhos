@@ -39,6 +39,7 @@ The build program accepts the following options:
 | `-cpu-stage-timing` | Enable CPU stage timing instrumentation. |
 | `-gpu-stage-timing` | Enable Vulkan GPU stage timing instrumentation. |
 | `-plan-stage-timing` | Enable CPU and Vulkan GPU planning stage timing. |
+| `-align-start-time-to-sample` | Round the planned start time down to a sample interval; disabled by default. |
 | `-all-stage-timing` | Enable CPU, Vulkan GPU, and planning stage timing. |
 | `-asan` | Enable AddressSanitizer in debug builds. |
 | `-no-break` | Disable debugger breakpoints from the messenger. |
