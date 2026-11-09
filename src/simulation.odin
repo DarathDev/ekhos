@@ -376,19 +376,17 @@ sort_scatters_by_distance_interval :: proc(
 	defer delete(distanceMidpoints)
 	for scatterIndex in 0 ..< len(scatters) {
 		scatter := scatters[scatterIndex]
-		transmitMinimum: f32 = math.INF_F32
+		transmitMinimum := distance_to_bounds(scatter.position, transmitBounds)
 		transmitMaximum: f32 = 0
 		for representative in representatives.transmit {
 			distance := linalg.length(scatter.position - representative)
-			transmitMinimum = min(transmitMinimum, distance)
 			transmitMaximum = max(transmitMaximum, distance)
 		}
 
-		receiveMinimum: f32 = math.INF_F32
+		receiveMinimum := distance_to_bounds(scatter.position, receiveBounds)
 		receiveMaximum: f32 = 0
 		for representative in representatives.receive {
 			distance := linalg.length(scatter.position - representative)
-			receiveMinimum = min(receiveMinimum, distance)
 			receiveMaximum = max(receiveMaximum, distance)
 		}
 
@@ -422,6 +420,12 @@ sort_scatters_by_distance_interval :: proc(
 	// Aperture sampling extends the support by half a sample on both sides.
 	apertureSampleCount = u32(max(sample_range_sample_count(transmitSampleRange), sample_range_sample_count(receiveSampleRange))) + 2
 	return
+}
+
+distance_to_bounds :: proc(position: [3]f32, bounds: DistanceBounds) -> f32 {
+	// The nearest point may lie on a face or inside the bounds, not at a corner.
+	nearest := linalg.min(linalg.max(position, bounds.minimum), bounds.maximum)
+	return linalg.length(position - nearest)
 }
 
 distance_bounds_add :: proc(bounds: ^DistanceBounds, position: [3]f32) {
