@@ -380,7 +380,10 @@ detect_cpp_compiler :: proc() -> (path: string, kind: CompilerKind, ok := true) 
 get_cpp_static_archiver :: proc(kind: CompilerKind) -> string {
 	switch kind {
 	case .MSVC:
-		return "lib"
+		if check_cmd("lib.exe") do return "lib.exe"
+		if check_cmd("llvm-lib.exe") do return "llvm-lib.exe"
+		error(false, "No MSVC-compatible librarian found. Add lib.exe or llvm-lib.exe to PATH.")
+		return ""
 	case .Clang:
 		fallthrough
 	case .GCC:

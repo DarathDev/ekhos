@@ -312,6 +312,7 @@ build_pffft :: proc() -> (ok := true) {
 		objectFiles  = {objectPath},
 		outputPath   = libraryPath,
 	}
+	if len(archiveParameters.archiverPath) == 0 do return false
 	archiveCmd := build_cpp_archive_command(compilerKind, archiveParameters) or_return
 	run_cmd_checked(archiveCmd) or_return
 	return
