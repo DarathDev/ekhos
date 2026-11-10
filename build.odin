@@ -193,7 +193,12 @@ build_lib :: proc(options: ^[dynamic]OdinBuildOption) -> (ok := true) {
 	append(&odinCmd, ODIN_CMD, ODIN_BUILD_ARG, EKHOS_SRC_DIR)
 	append(&odinCmd, ..odin_options_to_args(options[:]))
 	run_cmd_checked(odinCmd[:]) or_return
-	pffftObjectPath := assume(os.join_path({TMP_DIRECTORY + "pffft/", assume(os.join_filename("pffft", get_cpp_object_extension(CPP_COMPILER_KIND), context.temp_allocator))}, context.allocator))
+	pffftObjectPath := assume(
+		os.join_path(
+			{TMP_DIRECTORY + "pffft/", assume(os.join_filename("pffft", get_cpp_object_extension(CPP_COMPILER_KIND), context.temp_allocator))},
+			context.allocator,
+		),
+	)
 	append_object_to_static_library(CPP_COMPILER_KIND, libraryOutPath, pffftObjectPath) or_return
 
 	if EKHOS_MATLAB {
@@ -290,7 +295,12 @@ build_pffft :: proc() -> (ok := true) {
 		compilerPath      = compilerPath,
 		outputType        = .ObjectFiles,
 		sourcePaths       = {PFFFT_SOURCE},
-		outputPath        = assume(os.join_path({tmpDirectory, assume(os.join_filename("pffft", get_cpp_object_extension(compilerKind), context.temp_allocator))}, context.temp_allocator)),
+		outputPath        = assume(
+			os.join_path(
+				{tmpDirectory, assume(os.join_filename("pffft", get_cpp_object_extension(compilerKind), context.temp_allocator))},
+				context.temp_allocator,
+			),
+		),
 		optimizationLevel = optimizationLevel,
 		fastMath          = false,
 		debug             = EKHOS_BUILD_MODE == "debug",
