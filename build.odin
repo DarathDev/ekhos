@@ -180,7 +180,8 @@ build_lib :: proc(options: ^[dynamic]OdinBuildOption) -> (ok := true) {
 	when ODIN_OS == .Windows {
 		libraryName := assume(os.join_filename(EKHOS_OUTPUT_LIB_NAME, "lib", context.allocator))
 		_, cppCompilerKind, _ := detect_cpp_compiler()
-		if cppCompilerKind == .MSVC do append(options, OdinBuildOption{flag = "extra-linker-flags", value = {"/IGNORE:4006"}})
+		// Temporarily have to use msvc as the linker until https://github.com/odin-lang/Odin/issues/8272 is resolved
+		if cppCompilerKind == .MSVC do append(options, OdinBuildOption{flag = "linker", value = {"msvc"}}, OdinBuildOption{flag = "extra-linker-flags", value = {"/IGNORE:4006"}})
 	} else when ODIN_OS == .Linux {
 		libraryName := assume(os.join_filename(EKHOS_OUTPUT_LIB_NAME, "a", context.allocator))
 	}
@@ -266,7 +267,7 @@ PFFFT_SOURCE :: PFFFT_DIRECTORY + "pffft.c"
 append_object_to_static_library :: proc(compilerKind: CompilerKind, libraryPath, objectPath: string) -> (ok := true) {
 	if compilerKind == .MSVC {
 		combinedLibraryPath := fmt.aprintf("%s.combined", libraryPath)
-		command := []string{"lib", fmt.aprintf("/OUT:%s", combinedLibraryPath), libraryPath, objectPath}
+		command := []string{"lib", fmt.aprintf("/OUT:%s", combinedLibraryPath), "/IGNORE:4006", libraryPath, objectPath}
 		assert(assert(run_cmd(command)) == 0)
 		assert(os.copy_file(libraryPath, combinedLibraryPath))
 		return
