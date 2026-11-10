@@ -8,6 +8,7 @@ While it can perform simulations for arbitrary sets of rectangular and triangula
 
 - [Odin](https://github.com/odin-lang/Odin)
 - [Slang](https://github.com/shader-slang/slang)
+- On Windows, Visual Studio C++ build tools and `lib.exe` or `llvm-lib.exe` on `PATH`
 
 ## License
 
@@ -25,6 +26,7 @@ odin run . -- -lib -matlab
 ```
 
 Note: MATLAB will crash if a debug trap is hit and no debugger is attached.
+On Windows, the build currently selects Odin's MSVC linker to produce a static library.
 
 The build program accepts the following options:
 
@@ -34,7 +36,7 @@ The build program accepts the following options:
 | `-test`, `-tests`, or `-t` | Build the test executable. |
 | `-debug` or `-d` | Build with debug information and runtime checks. |
 | `-release` or `-r` | Build an optimized release. |
-| `-matlab` | Also copy the library to `matlab/EkhosLib.a`. |
+| `-matlab` | Also copy the library to `matlab/EkhosLib.lib` on Windows or `matlab/EkhosLib.a` on Linux. |
 | `-profile` | Enable profiling instrumentation. |
 | `-cpu-stage-timing` | Enable CPU stage timing instrumentation. |
 | `-gpu-stage-timing` | Enable Vulkan GPU stage timing instrumentation. |
